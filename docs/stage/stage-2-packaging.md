@@ -211,34 +211,128 @@ fn resolve_node(app: &tauri::AppHandle) -> PathBuf { /* ... */ }
 
 **目的**：启用打包并正确配置 resources 与 targets。
 
-**关键配置**：
+**关键配置**（`src-tauri/tauri.conf.json` 实测落地版）：
 
 ```json
 {
   "bundle": {
     "active": true,
+    "targets": ["nsis"],
     "resources": {
-      "resources/runtime/": "runtime/"
+      "../resources/runtime/": "runtime/"
     },
-    "targets": "all",
     "icon": [
       "icons/32x32.png",
+      "icons/64x64.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
+      "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "template": "nsis/installer.nsi"
+      }
+    }
   }
 }
 ```
 
 **图标要求**：
-- 用 `tauri icon` 命令（需 `cargo install tauri-cli`）从一张 1024x1024 源图生成全尺寸图标
-- 或继续用占位图标（阶段 5 再定制）
+- 用 `tauri icon` 从一张 1024x1024 源图生成全尺寸图标（本阶段已用 deepseek 官方图标）
+- `icon.ico` 必须包含多尺寸（本阶段实测含 16/24/32/48/64/256，共 6 帧）
+
+#### 图标修复（实测踩坑，务必保留）
+
+**现象**：`dsh-desktop.exe` 有图标，但 `setup.exe` 与桌面/开始菜单快捷方式显示为系统默认图标。
+
+**根因**（两条，互相独立）：
+
+1. **安装包无图标**：Tauri 2 不会把 `bundle.icon` 自动用作安装程序图标，必须显式配置
+   `bundle.windows.nsis.installerIcon`（`uninstallerIcon` 同理）。
+2. **快捷方式无图标**：Tauri 2 官方 NSIS 模板的 `CreateShortcut` **只传了 2 个参数**（link + target），
+   未传 icon file/index。生成的 `.lnk` 的 `IconLocation` 为空（表现为 `,0`），Windows Shell 不继承目标图标。
+
+**修复**：
+
+1. 配置 `installerIcon` / `uninstallerIcon` 指向 `icons/icon.ico`。
+2. 自定义 NSIS 模板：
+   - 从与 `tauri-cli` 版本匹配的 tag 下载官方模板，存为 `src-tauri/nsis/installer.nsi`
+     （本阶段 `tauri-cli 2.11.4` → tag `tauri-cli-v2.11.4`）：
+     ```
+     https://raw.githubusercontent.com/tauri-apps/tauri/tauri-cli-v2.11.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
+     ```
+   - 给 3 处 `CreateShortcut` 补上图标参数（NSIS 语法须先补空的 `parameters`）：
+     ```nsis
+     CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\${MAINBINARYNAME}.exe" 0
+     ```
+   - 配置 `bundle.windows.nsis.template: "nsis/installer.nsi"`。
+
+> **Tauri 升级时**：需重新下载对应版本模板并**重打同样的 3 处补丁**（模板内已用
+> `; [dsh-desktop patch]` 注释标记）。这一点要写进升级 checklist。
+
+**验证方法**（像素级，可复现）：
+
+```powershell
+# 用 Shell API（资源管理器取图标的真实路径）提取图标，与官方源图 32x32 逐像素比对
+# exe / setup.exe 应 diff=0；快捷方式 diff≈169 且差异集中在左下角 = Windows 快捷方式箭头覆盖层（正常）
+```
+
+**注意**：`.lnk` 图标与 exe 图标必然存在约 169 像素差异，位置固定在左下角
+（x 0–12, y 19–31），这是 Windows 快捷方式箭头 overlay，**不是缺图标**，不要据此误判。
+
+**实测结果**（已跑通完整 `tauri build` 链路，非手工补丁）：
+
+| 产物 | 修复前 | 修复后 |
+|---|---|---|
+| `setup.exe` | diff=865/1024（系统默认图标） | **diff=0** |
+| `dsh-desktop.exe` | diff=0 | diff=0 |
+| 快捷方式 `IconLocation` | `,0`（空） | `$INSTDIR\dsh-desktop.exe,0` |
+
+- 自定义模板生效确认：生成的 `installer.nsi` 含 3 处补丁 + 3 个 `[dsh-desktop patch]` 标记
+- 安装后启动：窗口标题 `DeepSeek Harness`，`node.exe` + `msedgewebview2.exe` 子进程正常，
+  dsh 服务 HTTP 200（14523 字节），无独立 console 窗口
+
+#### 任务栏可见性优化
+
+**现象**：黑色鲸鱼 logo 在深色 Windows 任务栏下几乎看不见。
+
+**根因**：`icon.png` 源图是黑色半透明鲸鱼 logo，与深色任务栏背景对比度极低。
+
+**最终方案**（经多轮预览迭代后确认）：
+
+- **浅蓝背景 `#7286FE`**（DeepSeek 官方蓝 `#4D6BFE` 提亮约 12%）+ **纯黑鲸鱼 logo，无描边**
+- logo 做了**二值化处理**：原 alpha 通道边缘渐变（半透明），先阈值化（>100）→ 高斯模糊 1.2px →
+  再阈值化（>127），得到边缘干净的实心轮廓
+- 背景为圆角方形（1024×1024，圆角约 21%），logo 占宽 72%，垂直居中略偏上
+
+**实现**（Python/PIL）：
+
+1. 从原 `icon.png` 提取 logo，alpha 二值化得到实心黑鲸。
+2. 生成 1024×1024 浅蓝圆角背景，与 logo 合成，保存为新 `icon.png`。
+3. 运行 `npx @tauri-apps/cli icon src-tauri/icons/icon.png` 重新生成 `icon.ico`、各尺寸 PNG、`icon.icns`。
+4. 重新打包。
+
+> 曾尝试过白底、白色描边（粗/细/均匀化）等方案，均因视觉效果不佳被否决；
+> 白描边在 alpha 渐变下会出现不均匀缺失，若未来要用描边须先做 alpha 二值化。
+> 原黑色图标文件备份在 `src-tauri/icons/icon-original.png`。
+
+**颜色对比**（像素级，32×32 图标平均色）：
+
+| 版本 | 平均 RGBA | 说明 |
+|---|---|---|
+| 原黑色 logo | `(0, 0, 0, 206)` | 黑色半透明，深色任务栏上看不见 |
+| 最终版（浅蓝底黑鲸） | `(92, 108, 203, 251)` | 蓝色块醒目，深浅任务栏均可见 |
 
 **通过标准**：
-- [ ] `bundle.active: true` 生效
-- [ ] `bundle.resources` 映射正确（打包后 runtime 在安装包内 `runtime/` 相对路径）
-- [ ] 图标配置完整
+- [x] `bundle.active: true` 生效
+- [x] `bundle.resources` 映射正确（打包后 runtime 在安装包内 `runtime/` 相对路径）
+- [x] 图标配置完整
+- [x] `setup.exe` 图标与官方源图逐像素一致（diff=0）
+- [x] `dsh-desktop.exe` 图标与官方源图逐像素一致（diff=0）
+- [x] 快捷方式 `IconLocation` 指向 `$INSTDIR\dsh-desktop.exe,0`
 
 ---
 
