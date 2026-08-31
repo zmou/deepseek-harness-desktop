@@ -334,6 +334,45 @@ fn resolve_node(app: &tauri::AppHandle) -> PathBuf { /* ... */ }
 - [x] `dsh-desktop.exe` 图标与官方源图逐像素一致（diff=0）
 - [x] 快捷方式 `IconLocation` 指向 `$INSTDIR\dsh-desktop.exe,0`
 
+#### ⚠️ 已知安全问题（待官方发版后处理，2026-08-30 调查）
+
+**现状**：内嵌 `@deepseek-ai/dsh@0.1.1-rc.2` 的 web server **无任何鉴权**
+（实测：无 token 与伪造 token 访问 `http://127.0.0.1:<port>/` 均返回 200）。
+
+**风险面**（实测确认只绑定 `127.0.0.1`，外部网络不可达）：
+
+1. **浏览器沙箱内的远程网页**（主要增量风险）：DNS rebinding（恶意域名解析到 127.0.0.1
+   绕过同源策略）与 CSRF（恶意网页向本地端口发 POST），可无鉴权触达 web RPC。
+2. 本机同权限进程可直接访问——但此类进程本就能读 `~/.dsh` 下的会话/凭据文件，增量有限。
+
+**官方时间线**（已核实）：
+
+- token 鉴权随 `v0.1.2-alpha.1` 引入（GitHub Release 2026-08-27，commit `cd5ef81`；
+  鉴权实现提交 `3e24087bfa fix(web): authenticate the browser Host API`）
+- Release notes 原文：「网络访问 Web 界面时启用链接中的一次性 token 认证鉴权」
+- **npm 截至 2026-08-30 尚未发布** 0.1.2（最新仍为 0.1.1-rc.2）；
+  官方 npm publish 是 tag 后的手动流程（`release-publish.yml`，workflow_dispatch）
+
+**官方鉴权行为**（依据 `apps/cli/tests/web-auth.e2e.ts`，升级后照此验收）：
+
+- ready URL 为 `http://127.0.0.1:<port>/?token=<43位base64url>`
+- 无 token / 伪造 loopback Host → `401 unauthorized`（Host 校验同时防 DNS rebinding）
+- 首次 `GET /?token=…` → `303` + `Set-Cookie`（`HttpOnly`、`SameSite=Strict`、无 `Secure`）
+- cookie 跨重启持久（凭据存 `~/.dsh/.credentials.yaml`，权限 0600）
+
+**升级 checklist（npm 发布 ≥0.1.2 后执行）**：
+
+1. `scripts/build-runtime.mjs` 更新并重装 dsh 内嵌运行时
+2. **同步修复 `main.rs` 潜伏 bug**：URL 正则 `dsh web: (http://127\.0\.0\.1:\d+)`
+   会截断 `?token=`（官方 e2e 用 `dsh web: (http://[^\s]+)` 取完整 URL）——
+   必须改为完整 URL 匹配，并用完整 URL 创建 webview 窗口；日志中对 token redact
+3. 验收：无 token → 401；带 token 首访 → 303；UI 正常；native 终端回归
+4. 检查示范 cordis plugin 是否受 0.1.2 Breaking Changes 影响
+   （ApiProxy 移除改用 `@Remote`、启动统一走 Profile、Code Mode 更名 PTC、会话 UI 模块拆分）
+5. 回归打包链路（图标/快捷方式等本章既有验收项）
+
+**决策**：等官方 npm 发布后走上述 checklist，不基于 alpha/源码自建运行时。
+
 ---
 
 ### T5 本机 Windows 打包验证
@@ -356,12 +395,17 @@ $cargo = "$env:USERPROFILE\.cargo\bin\cargo.exe"
 2. 确认安装后**不依赖系统 Node**（移除 PATH 中的 node 或用全新环境）
 3. 启动应用 → 窗口加载 dsh UI
 4. **回归 native 终端功能**：在 UI 中执行一个 shell/终端命令，确认 node-pty/koffi 正常（而非只看 web UI 能开）
-5. 关闭无残留进程
+5. **单实例回归**：应用已打开时再次双击快捷方式，不得新建窗口/实例，
+   而是把已有窗口恢复并聚焦（`tauri-plugin-single-instance`，
+   注册于 Builder 首位；dsh 就绪前窗口未创建时回调静默忽略）
+6. 关闭无残留进程
 
 **通过标准**：
 - [ ] 产出 NSIS 安装包（记录体积）
 - [ ] 干净环境安装后无需 Node 跑通
 - [ ] 终端/子进程功能正常（native 模块可用）
+- [ ] 单实例生效：第二启动实例自动退出、已有窗口聚焦、
+      插件辅助窗口（`*-siw`）带 `WS_EX_TOOLWINDOW` 不污染任务栏
 - [ ] 关闭无残留进程
 
 ---

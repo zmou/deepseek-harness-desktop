@@ -2,3 +2,5 @@ target/
 src-tauri/target/
 src-tauri/gen/
 resources/runtime/
+# 构建/调试日志（tauri build 输出重定向等）
+src-tauri/logs/
