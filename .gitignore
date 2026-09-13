@@ -1,2 +1,12 @@
 .stage-p0/
 .codebuddy/
+.runtime-backup/
+.empty-tmp/
+
+# Local reference checkout of the official deepseek-harness repository.
+# It is NOT part of this project; never commit it. It is neither a git
+# submodule nor a subtree by design (see docs/github-release-sync-and-source-build-strategy.md).
+deepseek-harness/
+
+# Build / debug logs
+*.log

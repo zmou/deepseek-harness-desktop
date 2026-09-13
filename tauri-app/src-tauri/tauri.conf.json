@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "dsh-desktop",
-  "version": "0.1.0",
+  "productName": "DeepSeek Harness Desktop",
+  "mainBinaryName": "dsh-desktop",
+  "version": "0.1.5-rc.1",
   "identifier": "com.deepseek.dsh-desktop",
   "build": {
     "beforeDevCommand": "",
@@ -16,7 +17,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
     "resources": {
       "../resources/runtime/": "runtime/"
     },
@@ -32,7 +32,8 @@
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico",
-        "template": "nsis/installer.nsi"
+        "template": "nsis/installer.nsi",
+        "installMode": "perMachine"
       }
     }
   }

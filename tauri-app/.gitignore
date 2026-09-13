@@ -1,6 +1,11 @@
 target/
 src-tauri/target/
 src-tauri/gen/
-resources/runtime/
-# 构建/调试日志（tauri build 输出重定向等）
+resources/runtime/*
+!resources/runtime/.gitkeep
+# Build/debug logs (tauri build output redirections etc.)
 src-tauri/logs/
+# Old runtime versions moved aside when upgrading (rollback copies; GBs, never commit)
+.runtime-backup/
+resources/.dsh-runtime-backup/
+resources/runtime/dsh-runtime.*/

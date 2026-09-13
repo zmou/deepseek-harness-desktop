@@ -1,0 +1,29 @@
+# Normalize line endings for consistent diffs across platforms.
+* text=auto
+
+# Text files: LF in the repository.
+*.sh text eol=lf
+*.md text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.mjs text eol=lf
+*.html text eol=lf
+
+# Windows-native scripts and installer templates: CRLF on checkout.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.nsi text eol=crlf
+
+# Binaries
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.zip binary

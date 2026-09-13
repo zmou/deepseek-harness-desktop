@@ -334,44 +334,77 @@ fn resolve_node(app: &tauri::AppHandle) -> PathBuf { /* ... */ }
 - [x] `dsh-desktop.exe` 图标与官方源图逐像素一致（diff=0）
 - [x] 快捷方式 `IconLocation` 指向 `$INSTDIR\dsh-desktop.exe,0`
 
-#### ⚠️ 已知安全问题（待官方发版后处理，2026-08-30 调查）
+#### ✅ web 鉴权（2026-08-31 升级 `0.1.2-alpha.2` 后已解决）
 
-**现状**：内嵌 `@deepseek-ai/dsh@0.1.1-rc.2` 的 web server **无任何鉴权**
-（实测：无 token 与伪造 token 访问 `http://127.0.0.1:<port>/` 均返回 200）。
+> 上一版记录的「已知安全问题：内嵌 `0.1.1-rc.2` 的 web server 无任何鉴权」
+> 已随运行时升级解决，原文结论保留在下面作为背景。
 
-**风险面**（实测确认只绑定 `127.0.0.1`，外部网络不可达）：
+**实测结果**（本机，内嵌 `@deepseek-ai/dsh@0.1.2-alpha.2`）：
 
-1. **浏览器沙箱内的远程网页**（主要增量风险）：DNS rebinding（恶意域名解析到 127.0.0.1
-   绕过同源策略）与 CSRF（恶意网页向本地端口发 POST），可无鉴权触达 web RPC。
-2. 本机同权限进程可直接访问——但此类进程本就能读 `~/.dsh` 下的会话/凭据文件，增量有限。
+| 请求 | 结果 |
+|---|---|
+| `GET http://127.0.0.1:<port>/`（无 token） | `401 unauthorized` |
+| `GET /?token=<43位base64url>` | `303` + `location: /` + `Set-Cookie` |
+| 带该 cookie 再访问 | `200` |
 
-**官方时间线**（已核实）：
+`Set-Cookie` 形如 `dsh-auth-<authority-hash>=v1.<payload>.<sig>; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict`
+（30 天有效，凭据存 `~/.dsh/.credentials.yaml`，权限 0600；cookie 名绑定 `host:port`，
+伪造 loopback Host 会被拒，同时防住 DNS rebinding）。
 
-- token 鉴权随 `v0.1.2-alpha.1` 引入（GitHub Release 2026-08-27，commit `cd5ef81`；
-  鉴权实现提交 `3e24087bfa fix(web): authenticate the browser Host API`）
-- Release notes 原文：「网络访问 Web 界面时启用链接中的一次性 token 认证鉴权」
-- **npm 截至 2026-08-30 尚未发布** 0.1.2（最新仍为 0.1.1-rc.2）；
-  官方 npm publish 是 tag 后的手动流程（`release-publish.yml`，workflow_dispatch）
+**桌面壳（`main.rs`）必须做的三处适配**，否则升级即故障：
 
-**官方鉴权行为**（依据 `apps/cli/tests/web-auth.e2e.ts`，升级后照此验收）：
+1. **URL 正则必须取整条 URL**。原来是 `dsh web: (http://127\.0\.0\.1:\d+)`，会截断
+   `?token=`，WebView 以无凭据地址打开 → 401 → 白屏。改为 `dsh web: (http://[^\s]+)`
+   （与官方 e2e 一致），并用完整 URL 创建窗口。
+2. **日志必须脱敏**。token 就写在 URL 里，而 dsh 的 stdout 全量进日志、下载 URL 也进日志，
+   统一走 `redact_url()` 把 `token` 参数值替换成 `***`（真实下载仍用原始 URL）。
+3. **Rust 侧下载要自己换 cookie**。0.1.2 的 web RPC **只认会话 cookie**
+   （`BrowserAuth.isAuthenticated` 只读 `cookie` 头，不认 URL 上的 token），
+   而该 cookie 是 `HttpOnly`——前端 JS 和 Tauri 都拿不到。因此启动时用 ready URL
+   先发一次 `GET`（`ureq` 设 `redirects(0)` 以便读到 303 的 `Set-Cookie`），
+   之后下载请求带上它。token 是**进程级且可重复兑换**（服务端只做常量时间比对、
+   不消耗），这次兑换不影响 WebView 的后续访问。
 
-- ready URL 为 `http://127.0.0.1:<port>/?token=<43位base64url>`
-- 无 token / 伪造 loopback Host → `401 unauthorized`（Host 校验同时防 DNS rebinding）
-- 首次 `GET /?token=…` → `303` + `Set-Cookie`（`HttpOnly`、`SameSite=Strict`、无 `Secure`）
-- cookie 跨重启持久（凭据存 `~/.dsh/.credentials.yaml`，权限 0600）
+**升级 runtime 的坑**（`scripts/build-runtime.mjs` 已处理，换版本时勿回退）：
 
-**升级 checklist（npm 发布 ≥0.1.2 后执行）**：
+- 直接 `pnpm add @deepseek-ai/dsh@<新版本>` **只会替换主包**：实测 187 个家族包仍停在
+  旧版本，启动即报 `@deepseek-ai/dsh-llm does not provide an export named 'deepFreeze'`；
+  连删掉 `pnpm-lock.yaml` 重装也一样。
+- 正确做法是**在空目录里全新解析**，且顺序必须是「先把旧目录改名让位，再在**最终路径**
+  上安装」：Windows 上 pnpm 用**绝对路径的 junction** 链接包，若装到 staging 目录再改名，
+  所有 junction 都会指向旧路径而断裂（实测 `@deepseek-ai/dsh` 变成空目录）。
+- 脚本内置两道校验：主包版本 + 家族包版本分布（扫描 `node_modules/.pnpm` 下所有
+  `@deepseek-ai/dsh*` 实体；只比对 dsh 前缀，排除 `@deepseek-ai/node-addon-landlock-run`
+  这类走独立版本线的 native 包）。当前为 `{"0.1.2-alpha.2": 215}`，
+  混入任何旧版本即判定构建失败并自动回滚到上一个 runtime。
+- 旧 runtime 不自动删除（文件数以万计，会被批量删除保护拦下），改名为
+  `dsh-runtime.<时间戳>` 放到 runtime 目录**之外**的 `.dsh-runtime-backup/`，
+  否则会被整个打进安装包。
 
-1. `scripts/build-runtime.mjs` 更新并重装 dsh 内嵌运行时
-2. **同步修复 `main.rs` 潜伏 bug**：URL 正则 `dsh web: (http://127\.0\.0\.1:\d+)`
-   会截断 `?token=`（官方 e2e 用 `dsh web: (http://[^\s]+)` 取完整 URL）——
-   必须改为完整 URL 匹配，并用完整 URL 创建 webview 窗口；日志中对 token redact
-3. 验收：无 token → 401；带 token 首访 → 303；UI 正常；native 终端回归
-4. 检查示范 cordis plugin 是否受 0.1.2 Breaking Changes 影响
-   （ApiProxy 移除改用 `@Remote`、启动统一走 Profile、Code Mode 更名 PTC、会话 UI 模块拆分）
-5. 回归打包链路（图标/快捷方式等本章既有验收项）
+**runtime 必须放在短路径下**（Windows，见 `build-runtime.mjs` 的 `RUNTIME_DIR`）：
 
-**决策**：等官方 npm 发布后走上述 checklist，不基于 alpha/源码自建运行时。
+`makensis` 受 Windows 260 字符路径限制。项目路径叠加 pnpm 的 `.pnpm/<pkg>_<hash>/node_modules/...`
+嵌套后，最长路径达 **273 字符**，NSIS 阶段直接 `failed opening file` 失败。
+把 runtime 放在 `D:\rt`（可用 `DSH_RUNTIME_DIR` 覆盖）后最长路径降到 **217 字符**。
+
+排查过程中试过并**否决**的三条路，记下来避免重复踩：
+
+- `pnpm` 的 `node-linker=hoisted`：pnpm 11 已移除该模式（`pnpm config get node-linker`
+  返回 `undefined`），写了也不生效。
+- 用 junction（如 `D:\drt -> dsh-runtime`）缩短源路径：**Tauri 遍历 junction 时会跳过其中的
+  符号链接目录**，结果 `@deepseek-ai`、`@aws-sdk` 等顶层包整个没进 NSI，装出来的 runtime
+  只有 `.pnpm`，启动报 `dsh bin.js not found`。
+- 删掉 `.d.ts` / `.map` 缩短文件名：只能解决 425/562 个，剩下的超长文件里有运行时代码
+  （如 `@opentelemetry/exporter-logs-otlp-http/build/esm/platform/browser/OTLPLogExporter.js`）
+  和 agent 技能文档（`SKILL.md`），不能删。
+
+另外，pnpm 用**绝对路径的 junction**链接包，所以 runtime 目录**不能整体搬移**——
+换位置后所有链接断裂（`bin.js` 立刻访问不到），必须在新位置重新 install。
+
+**决策变更**：不再等 npm `latest`。npm 的 `latest`/`next` 仍是 `0.1.1-rc.2`，
+`0.1.2-alpha.2` 只发布在 `alpha` dist-tag 下，因此 `build-runtime.mjs` 的
+`DSH_VERSION` **固定写完整版本号**（可用 `DSH_VERSION` 环境变量覆盖），
+不依赖任何 dist-tag 解析；桌面端版本号（`tauri.conf.json` / `Cargo.toml`）与之保持一致。
 
 ---
 

@@ -1,8 +1,5 @@
 {
   "bundle": {
-    "resources": {
-      "../resources/runtime/node/": "runtime/node/",
-      "D:/drt/": "runtime/dsh-runtime/"
-    }
+    "targets": ["nsis"]
   }
 }

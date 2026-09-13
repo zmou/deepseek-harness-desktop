@@ -1,0 +1,31 @@
+# NOTICE
+
+DeepSeek Harness Desktop (dsh-desktop) is an independent, community-maintained
+desktop wrapper around [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness),
+an open-source project by DeepSeek AI licensed under the MIT License.
+
+## Trademarks
+
+"DeepSeek Harness" and the DeepSeek logo are trademarks of DeepSeek (深度求索).
+This project is **not** affiliated with, endorsed by, or sponsored by DeepSeek.
+The bundled application icon is derived from the official DeepSeek logo and is
+used solely to identify compatibility with DeepSeek Harness; it is not an
+official DeepSeek product icon. See the upstream
+[Brand Usage Guidelines](https://github.com/deepseek-ai/deepseek-harness/blob/master/BRAND_GUIDELINES.md).
+
+## Upstream
+
+- Upstream project: <https://github.com/deepseek-ai/deepseek-harness>
+- Upstream license: MIT (`deepseek-harness/LICENSE`)
+- Upstream safety notice: <https://github.com/deepseek-ai/deepseek-harness/blob/master/SAFETY.md>
+
+The upstream repository is **not vendored** into this repository. The desktop
+build downloads and bundles the official `@deepseek-ai/dsh` npm packages at
+build time; their licenses apply to the bundled runtime.
+
+## Third-party notices
+
+This repository itself depends on (but does not vendor) Rust crates and npm
+packages listed in `tauri-app/src-tauri/Cargo.lock` and the runtime
+`node_modules` installed by `scripts/build-runtime.mjs`. Their respective
+licenses apply.
