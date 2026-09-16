@@ -19,7 +19,7 @@ import {
   statSync,
   cpSync,
 } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -468,6 +468,113 @@ function patchGlobTool(dir = DSH_DIR) {
   console.log('[build-runtime] patched glob tool: dropped --no-ignore, added bulk excludes')
 }
 
+// ---------------------------------------------------------------------------
+// 发布裁剪（prune）：删除分发时用不到、但 npm 发布包会携带的开发/调试/文档文件。
+//
+// 动机：runtime 全量内嵌时约 310MB。Windows NSIS 的 LZMA-solid 恰好能压 6 倍，
+// 但 macOS dmg 用 hdiutil 默认的 UDZO(zlib) 弱压缩，几乎压不动这些文件，
+// 导致 dmg 反而比源目录更大（实测 504MB），超出 mac 用户可接受的下载量级。
+//
+// 统计（dsh 0.1.5-rc.1, Windows 本机）：
+//   .ts(含 .d.ts) 40.4MB / .map 35.8MB / .pdb 19.8MB / .md 7.4MB / .mts+.cts 4.5MB
+//   仅前三类即约 96MB。删除后 dmg 可落回 100MB 以内。
+//
+// 安全性：
+//   - dsh 的 npm 发布产物是编译后的 JS（lib/*.js），运行时不加载 .ts/.map；
+//   - .map/.pdb 只服务调试器与崩溃堆栈还原，不影响功能；
+//   - 文档/示例/测试目录不会被 require/import。
+// 逃生舱：设 DSH_RUNTIME_PRUNE=0 跳过裁剪（排查问题时全量保留）。
+// ---------------------------------------------------------------------------
+const PRUNE_DELETE_EXTS = [
+  '.map',      // source map（调试用）
+  '.md',       // 文档
+  '.ts',       // TypeScript 源码 / 类型声明（运行时只跑编译后的 .js）
+  '.mts',      // TS ESM 源码
+  '.cts',      // TS CJS 源码
+  '.tsbuildinfo', // TS 增量编译缓存
+  '.pdb',      // Windows 调试符号
+  '.cc',       // C++ 源码
+  '.h',        // C/C++ 头文件
+  '.hh',       // C++ 头文件
+]
+const PRUNE_DELETE_DIRS = [
+  'docs',
+  'examples',
+  'example',
+  'test',
+  'tests',
+  '__tests__',
+  'spec',
+  'benchmark',
+  'benchmarks',
+  'fixtures',
+  '.github',
+]
+// .ts 保留名单：若未来某个包出现"运行期才被加载的 .ts"（如 tsx 直跑源码的包），
+// 把包名加到这里即可精确豁免，而不是全局放弃裁剪。
+const PRUNE_KEEP_TS = []
+
+function pruneDevArtifacts() {
+  if (process.env.DSH_RUNTIME_PRUNE === '0') {
+    console.log('[build-runtime] prune disabled via DSH_RUNTIME_PRUNE=0')
+    return
+  }
+  const roots = [DSH_DIR, NODE_DIR].filter((d) => existsSync(d))
+  let removed = 0
+  let savedBytes = 0
+  let keptTs = 0
+
+  const walk = (dir, scopeRoot) => {
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isSymbolicLink()) continue // 不穿越链接（junction 目标是另存的原文件）
+      if (entry.isDirectory()) {
+        if (PRUNE_DELETE_DIRS.includes(entry.name)) {
+          const s = dirSize(full)
+          rmSync(full, { recursive: true, force: true })
+          removed++
+          savedBytes += s
+          continue
+        }
+        walk(full, scopeRoot)
+        continue
+      }
+      if (!entry.isFile()) continue
+      const ext = extname(entry.name).toLowerCase()
+      if (PRUNE_DELETE_EXTS.includes(ext)) {
+        if (ext === '.ts') {
+          const rel = full.slice(scopeRoot.length + 1).replace(/\\/g, '/')
+          const kept = PRUNE_KEEP_TS.some((p) => rel.startsWith(p))
+          if (kept) {
+            keptTs++
+            continue
+          }
+        }
+        try {
+          const s = statSync(full).size
+          rmSync(full, { force: true })
+          removed++
+          savedBytes += s
+        } catch {
+          /* 个别不可访问文件跳过 */
+        }
+      }
+    }
+  }
+
+  for (const root of roots) walk(root, root)
+  console.log(
+    `[build-runtime] pruned ${removed} dev/doc files (-${(savedBytes / 1024 / 1024).toFixed(1)} MB)` +
+      (keptTs > 0 ? `, kept ${keptTs} .ts by allowlist` : ''),
+  )
+}
+
 async function main() {
   // 清除 IDE/宿主注入的 NODE_OPTIONS（其 --require shim 会干扰 dsh 启动，实测导致 boot 卡死）
   delete process.env.NODE_OPTIONS
@@ -479,6 +586,9 @@ async function main() {
   // 修正 glob 工具（去掉 --no-ignore 等）：必须在 npm install 之后，
   // 否则重装依赖会把补丁覆盖回官方实现。
   patchGlobTool()
+  // 发布裁剪：必须在 patch 之后（patch 要读 lib/index.js，被删了会炸；
+  // 且顺序在 verify 之前，verify 直接反映最终产物体积）。
+  pruneDevArtifacts()
   verify()
   console.log('[build-runtime] done')
 }
