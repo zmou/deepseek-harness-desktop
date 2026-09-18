@@ -1,0 +1,35 @@
+# electron-builder 配置（规格 §9.1）
+#
+# 版本号来自 package.json 的 `version`（= <dsh 版本>-electron），
+# 由 scripts/build-mac-electron.sh 从 scripts/build-runtime.mjs 同步。
+#
+# 注意：不显式设置 `minimumSystemVersion`，继承 Electron 43 自身的最低要求（macOS 12）；
+#      CI 与打包脚本都会断言产物 `LSMinimumSystemVersion <= 12.0`（规格 §11.3）。
+appId: com.deepseek.dsh-desktop-electron
+productName: DeepSeek Harness Desktop
+
+directories:
+  output: release
+  buildResources: icons
+
+files:
+  - src/**
+  - package.json
+
+extraResources:
+  # 复用 build-runtime.mjs 产物，打进 Contents/Resources/runtime/
+  - from: ../tauri-app/resources/runtime
+    to: runtime
+
+mac:
+  target: [dmg]
+  category: public.app-category.developer-tools
+  icon: icons/icon.icns
+  # 签名：默认 ad-hoc；正式分发填证书（与 Tauri 版一致，先占位）
+  # identity: null
+
+dmg:
+  title: DeepSeek Harness Desktop
+  contents:
+    - { x: 130, y: 220 }
+    - { x: 410, y: 220, type: link, path: /Applications }

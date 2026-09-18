@@ -8,5 +8,10 @@
 # submodule nor a subtree by design (see docs/github-release-sync-and-source-build-strategy.md).
 deepseek-harness/
 
+# Electron 兼容版（L2 桌面壳，独立链路）
+electron-app/node_modules/
+electron-app/release/
+electron-app/resources/runtime/
+
 # Build / debug logs
 *.log

@@ -67,8 +67,27 @@
 | 平台 | 安装包文件名 | 状态 |
 |---|---|---|
 | Windows x64 | `DeepSeek-Harness-Desktop-Setup-v<version>-x64.exe` | ✅ 已提供（本机构建） |
-| macOS（Apple Silicon / Intel） | `DeepSeek-Harness-Desktop_<version>_aarch64.dmg` / `x64.dmg` | 🔧 由 CI 构建 |
+| macOS 13+（默认版） | `DeepSeek-Harness-Desktop_<version>_aarch64.dmg` / `_x64.dmg` | 🔧 由 CI 构建 |
+| macOS 12 及以下（兼容版） | `DeepSeek-Harness-Desktop_<version>_aarch64-electron.dmg` / `_x64-electron.dmg` | 🔧 由 CI 构建 |
 | Linux x64 | `DeepSeek-Harness-Desktop_<version>_amd64.deb` / `.AppImage` | 🔧 由 CI 构建 |
+
+### macOS 选哪个包
+
+macOS 上有**两个内核不同**的产物，靠文件名后缀区分：
+
+| | 默认版（无后缀） | 兼容版（`-electron` 后缀） |
+|---|---|---|
+| 渲染内核 | 系统 WebView（WKWebView） | 内嵌 Electron 43 / Chromium 150 |
+| 系统要求 | macOS 13 及以上 | **macOS 12.0 及以上**（含 12） |
+| 安装包体积 | 更小 | 约 187 MB（含内嵌 Chromium） |
+| 适用场景 | 推荐，系统能升级就用它 | 系统停留在 macOS 12 时的选择 |
+
+> **怎么选**：先试默认版；若在 macOS 12 上打开后**白屏**（系统 WebView 太旧，解析不了官方前端 bundle），
+> 再换带 `-electron` 后缀的兼容版。
+> 两版数据完全互通（会话 / 配置 / 凭据都在 `~/.dsh`），桌面层能力一致，可在两者之间直接切换。
+
+> **兼容版的长期建议**：Electron 43 是官方支持 macOS 12 的最后一档，Chromium 安全更新会逐步停止。
+> 它定位是**过渡方案**——系统可升级时请迁回默认版。
 
 > **Windows 首次运行提示**：当前安装包尚未进行代码签名，SmartScreen 可能弹出蓝色警告。
 > 点击 **「更多信息」→「仍要运行」** 即可继续。
@@ -106,6 +125,27 @@ powershell -ExecutionPolicy Bypass -File scripts/build-win.ps1 -DshVersion 0.1.3
 bash scripts/build-mac.sh
 ```
 
+### macOS 12 兼容版（Electron）
+
+```bash
+# 依赖：Node.js ≥ 22.19、npm（hdiutil 随 macOS 内置）
+bash scripts/build-mac-electron.sh
+# 产物：electron-app/release/DeepSeek-Harness-Desktop_<version>_<arch>-electron.dmg
+```
+
+- 与默认版**完全独立**的一条链路（Electron 43 + 内嵌 Chromium），只复用 `scripts/build-runtime.mjs` 的运行时产物
+- 版本号自动同步：从 `scripts/build-runtime.mjs` 读 `DSH_VERSION`，写入 `electron-app/package.json`（拼 `-electron` 后缀）；
+  升级 dsh 用 `DSH_VERSION=0.1.6 bash scripts/build-mac-electron.sh`
+- 打包后自动断言 `LSMinimumSystemVersion <= 12.0`，防止 `electron` 依赖被解析到更高大版本把 macOS 12 用户挡在门外
+- 不要放宽 `electron` 的版本锁（`package.json` 里是精确版本，不是 `^`）
+
+开发模式（不用打包，直接用系统 node + 仓库内已构建的 runtime）：
+
+```bash
+cd electron-app && npm start
+# 也可用 DSH_BIN 指到其它 dsh 产物
+```
+
 ### 仅构建运行时（三端通用）
 
 ```bash
@@ -115,7 +155,8 @@ node scripts/build-runtime.mjs
 
 ### CI
 
-`.github/workflows/build.yml` 提供 Windows / macOS / Linux 三端构建矩阵：推送 `v*` tag 或手动
+`.github/workflows/build.yml` 提供三条链路：Windows / macOS / Linux 的 Tauri 构建矩阵，以及独立的
+`build-macos-electron`（Electron 兼容版 dmg + 门槛断言）。推送 `v*` tag 或手动
 `workflow_dispatch` 触发，安装包产物上传到 Actions artifacts。
 
 > **Windows 深路径逃生舱**：若工作区路径过深导致 NSIS 打包报 260 字符错误，可设
@@ -158,7 +199,9 @@ cargo run --manifest-path tauri-app/src-tauri/Cargo.toml
 
 | 文档 | 内容 |
 |---|---|
-| [`tauri-app/README.md`](tauri-app/README.md) | 桌面壳原理、路径解析优先级、踩坑记录 |
+| [`tauri-app/README.md`](tauri-app/README.md) | 默认版桌面壳原理、路径解析优先级、踩坑记录 |
+| [`docs/electron-macos-compat-spec.md`](docs/electron-macos-compat-spec.md) | macOS 12 兼容版（Electron）实施方案规格 |
+| [`docs/electron-macos-compat-implementation.md`](docs/electron-macos-compat-implementation.md) | macOS 12 兼容版实施计划与验收记录 |
 | [`docs/dsh-desktop-analysis.md`](docs/dsh-desktop-analysis.md) | dsh 架构分析与桌面封装方案选型 |
 | [`docs/implementation-plan.md`](docs/implementation-plan.md) | 总体实施计划与阶段划分 |
 | [`docs/custom-web-extension-and-upgrade-architecture.md`](docs/custom-web-extension-and-upgrade-architecture.md) | Web 定制与官方升级隔离规范 |

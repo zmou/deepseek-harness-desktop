@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+- 新增 **macOS 12 兼容版**：独立 `electron-app/` 桌面壳（Electron 43 + 内嵌 Chromium），
+  修复 Tauri 版在 macOS 12 上因系统 WebView 过旧（Safari 15.4 级）加载官方前端白屏的问题
+  - 一键打包 `bash scripts/build-mac-electron.sh`，产物 `...-electron.dmg`（与默认版文件名靠后缀区分）
+  - 自动同步 dsh 版本号到 `electron-app/package.json`，并在打包后断言 `LSMinimumSystemVersion <= 12.0`
+  - 桌面层能力与默认版对齐：单实例、下载「另存为」+ 记住目录、日志 token 脱敏、隐藏 Session 导出弹窗、进程守护
+- macOS 下载新增「默认版 / 兼容版」选版指引；兼容版定位为过渡方案（Electron 43 是支持 macOS 12 的最后一档）
+- CI 新增 `build-macos-electron` 任务：构建兼容版 dmg 并做最低系统版本门槛断言
 - 开源发布准备：LICENSE、NOTICE、CONTRIBUTING、CHANGELOG
 - README 重构：中文主版（`README.md`）+ 独立英文版（`README.en.md`），新增徽章、下载与平台支持表、安全声明、桌面壳增值能力章节
 - 构建可移植性：移除 Windows 硬编码 `D:\rt` 运行时路径，默认使用仓库内 `tauri-app/resources/runtime/`
