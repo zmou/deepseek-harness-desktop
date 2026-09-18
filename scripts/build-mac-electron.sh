@@ -38,7 +38,7 @@ echo "  npm  : $(npm -v)"
 
 # ---------- [2/7] 构建 runtime（与 Tauri 版共享产物） ----------
 echo ""
-echo "[2/7] 构建 runtime（下载 darwin node + 安装 dsh + 补丁 + 裁剪）..."
+echo "[2/7] 构建 runtime（下载 darwin node + 安装 dsh + 应用 glob 补丁）..."
 echo "      首次运行需联网下载 node 与 npm 依赖，可能耗时数分钟；已存在则增量跳过..."
 node scripts/build-runtime.mjs
 

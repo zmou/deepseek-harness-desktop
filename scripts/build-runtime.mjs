@@ -469,21 +469,28 @@ function patchGlobTool(dir = DSH_DIR) {
 }
 
 // ---------------------------------------------------------------------------
-// 发布裁剪（prune）：删除分发时用不到、但 npm 发布包会携带的开发/调试/文档文件。
+// 发布裁剪（prune）：删除分发时用不到的开发/调试/文档文件。**默认关闭，需显式开启。**
 //
-// 动机：runtime 全量内嵌时约 310MB。Windows NSIS 的 LZMA-solid 恰好能压 6 倍，
-// 但 macOS dmg 用 hdiutil 默认的 UDZO(zlib) 弱压缩，几乎压不动这些文件，
-// 导致 dmg 反而比源目录更大（实测 504MB），超出 mac 用户可接受的下载量级。
+// 历史：最初为解决 macOS 安装包过大而引入——当时 dmg 用 hdiutil 默认的 UDZO(zlib)
+// 弱压缩，几乎压不动这些文件，dmg 反而比源目录更大（实测 504MB）。但真正的解法是
+// ULMO(LZMA) 强压缩（build-mac.sh 已接入），裁剪并非必需。
 //
-// 统计（dsh 0.1.5-rc.1, Windows 本机）：
-//   .ts(含 .d.ts) 40.4MB / .map 35.8MB / .pdb 19.8MB / .md 7.4MB / .mts+.cts 4.5MB
-//   仅前三类即约 96MB。删除后 dmg 可落回 100MB 以内。
+// 实测对比（dsh 0.1.5-rc.1 + ULMO，macOS x64，2026-09-18，见 CHANGELOG）：
+//   不裁剪：runtime 331.5MB → dmg 73.2MB（安装后 415MB）
+//   裁剪后：runtime 213.8MB → dmg 56.3MB（安装后 254MB）
+// 即裁剪只省 16.9MB 下载 / 161MB 磁盘，而删掉的 ~118MB 里有约一半是第三方包内的
+// .ts/.map——属于“运行期理论上用不到、但真被加载就极难排查”的一类，收益与风险不成
+// 比例，因此默认改为**完整保留 runtime**。
 //
-// 安全性：
+// 若将来确需瘦身，开启后的收益优先级：.pdb（跨平台发布包里夹带的 Windows 调试符号，
+// 在 mac/linux 上纯废）→ .map → docs/test 目录 → 最后才动 .ts。
+//
+// 开启方式：DSH_RUNTIME_PRUNE=1 node scripts/build-runtime.mjs
+//
+// 安全性（开启时）：
 //   - dsh 的 npm 发布产物是编译后的 JS（lib/*.js），运行时不加载 .ts/.map；
 //   - .map/.pdb 只服务调试器与崩溃堆栈还原，不影响功能；
 //   - 文档/示例/测试目录不会被 require/import。
-// 逃生舱：设 DSH_RUNTIME_PRUNE=0 跳过裁剪（排查问题时全量保留）。
 // ---------------------------------------------------------------------------
 const PRUNE_DELETE_EXTS = [
   '.map',      // source map（调试用）
@@ -515,8 +522,11 @@ const PRUNE_DELETE_DIRS = [
 const PRUNE_KEEP_TS = []
 
 function pruneDevArtifacts() {
-  if (process.env.DSH_RUNTIME_PRUNE === '0') {
-    console.log('[build-runtime] prune disabled via DSH_RUNTIME_PRUNE=0')
+  // 默认不裁剪：完整保留 runtime（理由与实测数据见上方注释块）
+  if (process.env.DSH_RUNTIME_PRUNE !== '1') {
+    console.log(
+      '[build-runtime] prune skipped (default: keep runtime complete); set DSH_RUNTIME_PRUNE=1 to slim it',
+    )
     return
   }
   const roots = [DSH_DIR, NODE_DIR].filter((d) => existsSync(d))
@@ -586,8 +596,9 @@ async function main() {
   // 修正 glob 工具（去掉 --no-ignore 等）：必须在 npm install 之后，
   // 否则重装依赖会把补丁覆盖回官方实现。
   patchGlobTool()
-  // 发布裁剪：必须在 patch 之后（patch 要读 lib/index.js，被删了会炸；
-  // 且顺序在 verify 之前，verify 直接反映最终产物体积）。
+  // 可选裁剪（默认关闭，DSH_RUNTIME_PRUNE=1 开启）：必须在 patch 之后
+  // （patch 要读 lib/index.js，被删了会炸），且在 verify 之前（verify 直接
+  // 反映最终产物体积）。
   pruneDevArtifacts()
   verify()
   console.log('[build-runtime] done')

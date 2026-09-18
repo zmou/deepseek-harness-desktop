@@ -31,9 +31,9 @@ echo "  npm  : $(npm -v)"
 echo "  cargo: $(cargo --version | head -1)"
 echo "  Xcode CLT: OK"
 
-# ---------- [2/5] 构建 runtime（含发布裁剪） ----------
+# ---------- [2/5] 构建 runtime ----------
 echo ""
-echo "[2/5] 构建 runtime（下载 darwin node + 安装 dsh + 应用 glob 补丁 + 发布裁剪）..."
+echo "[2/5] 构建 runtime（下载 darwin node + 安装 dsh + 应用 glob 补丁）..."
 echo "      首次运行需联网下载 node 与 npm 安装依赖，可能耗时数分钟..."
 node scripts/build-runtime.mjs
 
@@ -60,8 +60,17 @@ APP="$(ls -dt "$APP_DIR"/*.app 2>/dev/null | head -1 || true)"
 
 # 命名与 README 下载表一致：DeepSeek-Harness-Desktop_<version>_<arch>.dmg
 OUT_DMG="$DMG_DIR/DeepSeek-Harness-Desktop_${VERSION}_${ARCH_LABEL}.dmg"
-STAGE_DIR="$(mktemp -d)"
-trap 'rm -rf "$STAGE_DIR"' EXIT
+# 临时工作区：staging 放镜像内容，rw 镜像必须放在 staging 目录**外面**。
+# 踩坑记录：若把输出镜像写进 `-srcfolder` 内部（`$STAGE_DIR/rw.dmg`），hdiutil 会挂载新
+# 镜像后把 `$STAGE_DIR` 的内容整个拷进去，而 rw 镜像自己就在这个目录里 —— 边拷边长大，
+# 变成自我引用式膨胀，最终报 `hdiutil: create failed - 结果太大`（实测另见
+# `设备上无剩余空间`），脚本在 `set -e` 下直接中断，永远拿不到最终 dmg。
+WORK_DIR="$(mktemp -d)"
+STAGE_DIR="$WORK_DIR/stage"
+RW_DMG="$WORK_DIR/rw.dmg"
+# `|| true`：某些 IDE/宿主会注入 rm 包装脚本拦截批量删除，清理失败不应覆盖构建结论
+trap 'rm -rf "$WORK_DIR" 2>/dev/null || true' EXIT
+mkdir -p "$STAGE_DIR"
 
 rm -f "$OUT_DMG"
 
@@ -73,16 +82,20 @@ ln -s /Applications "$STAGE_DIR/Applications"
 # 1) 不压缩的读写镜像（只做“拷入 .app + 布局”，快，秒级）
 # 2) convert 阶段再做 LZMA 强压缩（ULMO）——整个镜像统一压缩，效果远好于 UDZO。
 #    ULMO 与 Tauri 默认的 UDZO 同为合法的 hdiutil 格式，任何 macOS 10.13+ 都支持挂载。
-TMP_RW="$STAGE_DIR/rw.dmg"
-hdiutil create -volname "DeepSeek Harness Desktop" -srcfolder "$STAGE_DIR" -ov -format UDRW "$TMP_RW" >/dev/null
-if ! hdiutil convert "$TMP_RW" -format ULMO -o "$OUT_DMG" >/dev/null 2>&1; then
+hdiutil create -volname "DeepSeek Harness Desktop" -srcfolder "$STAGE_DIR" -ov -format UDRW "$RW_DMG" >/dev/null
+if ! hdiutil convert "$RW_DMG" -format ULMO -o "$OUT_DMG" >/dev/null 2>&1; then
   # 极旧系统兜底：ULMO 不可用时退回 UDBZ(bzip2)
-  hdiutil convert "$TMP_RW" -format UDBZ -o "$OUT_DMG" >/dev/null
+  rm -f "$OUT_DMG"   # 清掉失败可能留下的半成品，否则 convert 会因目标已存在而报错
+  hdiutil convert "$RW_DMG" -format UDBZ -o "$OUT_DMG" >/dev/null
 fi
 
-# 删除 Tauri 默认命名的 dmg，避免同名混淆
-ls "$DMG_DIR"/*.dmg 2>/dev/null | while read -r f; do
-  [ "$(basename "$f")" != "$(basename "$OUT_DMG")" ] && rm -f "$f"
+# 删除 Tauri 默认命名的 dmg，避免同名混淆。
+# 用 if 而不是 `[ ... ] && rm`：后者在“最后一个元素恰好不需要删”时会以非 0 状态结束
+# 整个 while，配合 `set -o pipefail` 会直接中断脚本（在阶段 5 汇总输出之前，实测踩过）。
+for f in "$DMG_DIR"/*.dmg; do
+  if [ -e "$f" ] && [ "$(basename "$f")" != "$(basename "$OUT_DMG")" ]; then
+    rm -f "$f"
+  fi
 done
 
 echo "  强压缩 dmg: $OUT_DMG"
