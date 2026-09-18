@@ -7,6 +7,22 @@
 
 ## [Unreleased]
 
+- 新增 **macOS 12 兼容版**：独立 `electron-app/` 桌面壳（Electron 43 + 内嵌 Chromium），
+  修复 Tauri 版在 macOS 12 上因系统 WebView 过旧（Safari 15.4 级）加载官方前端白屏的问题
+  - 一键打包 `bash scripts/build-mac-electron.sh`，产物 `...-electron.dmg`（与默认版文件名靠后缀区分）
+  - 自动同步 dsh 版本号到 `electron-app/package.json`，并在打包后断言 `LSMinimumSystemVersion <= 12.0`
+  - 桌面层能力与默认版对齐：单实例、下载「另存为」+ 记住目录、日志 token 脱敏、隐藏 Session 导出弹窗、进程守护
+- macOS 下载新增「默认版 / 兼容版」选版指引；兼容版定位为过渡方案（Electron 43 是支持 macOS 12 的最后一档）
+- CI 新增 `build-macos-electron` 任务：构建兼容版 dmg 并做最低系统版本门槛断言
+- **运行时默认不再裁剪**：`build-runtime.mjs` 改为默认完整保留 runtime，需瘦身时用
+  `DSH_RUNTIME_PRUNE=1` 显式开启。实测（macOS x64 + ULMO 强压缩）：不裁剪 dmg 73.2MB /
+  安装后 415MB，裁剪后 56.3MB / 254MB——只省 16.9MB 下载，而删掉的约 118MB 里近半是第三方
+  包内的 .ts/.map（运行期一旦真被加载极难排查），收益与风险不成比例；当初引入裁剪是为了解决
+  「dmg 压不动、反而比源目录大」的问题，而该问题已由 ULMO 强压缩解决
+- 修复 macOS 打包：`build-mac.sh` 把强压缩用的 rw 中间镜像写在 `-srcfolder` 目录内部，
+  hdiutil 会把它自己也当成待拷内容而自我引用式膨胀，报 `create failed - 结果太大` / 设备无剩余空间，
+  脚本在 `set -e` 下中断、永远产不出最终 dmg（现改成 staging 外的工作区，一条命令即可跑完）；
+  同时修掉清理旧 dmg 时 `[ ... ] && rm` 在 `pipefail` 下中断脚本的问题
 - 开源发布准备：LICENSE、NOTICE、CONTRIBUTING、CHANGELOG
 - README 重构：中文主版（`README.md`）+ 独立英文版（`README.en.md`），新增徽章、下载与平台支持表、安全声明、桌面壳增值能力章节
 - 构建可移植性：移除 Windows 硬编码 `D:\rt` 运行时路径，默认使用仓库内 `tauri-app/resources/runtime/`

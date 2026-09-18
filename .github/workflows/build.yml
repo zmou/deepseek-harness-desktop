@@ -62,3 +62,82 @@ jobs:
           name: dsh-desktop-${{ matrix.platform }}
           path: tauri-app/src-tauri/target/release/bundle/${{ matrix.artifact }}
           if-no-files-found: error
+
+  # macOS 12 及以下兼容版（Electron 43）：与 Tauri 链路完全独立，只共享 runtime 产物。
+  # 规格依据：docs/electron-macos-compat-spec.md §11
+  build-macos-electron:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build runtime (node + dsh)
+        run: node scripts/build-runtime.mjs
+
+      - name: Install electron-app dependencies
+        working-directory: electron-app
+        run: npm ci
+
+      - name: Sync app version from dsh version
+        run: |
+          DSH_VERSION="$(sed -n "s/^const DSH_VERSION = process\.env\.DSH_VERSION || '\([^']*\)'$/\1/p" scripts/build-runtime.mjs | head -1)"
+          [ -n "$DSH_VERSION" ] || { echo "::error::cannot parse DSH_VERSION"; exit 1; }
+          node -e '
+            const fs = require("node:fs")
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"))
+            pkg.version = process.argv[1] + "-electron"
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n")
+          ' "$DSH_VERSION"
+        working-directory: electron-app
+
+      - name: Build Electron dmg
+        working-directory: electron-app
+        run: npx electron-builder --mac dmg --publish never
+
+      # 门槛守护：Electron 大版本一旦越过 43，产物最低系统版本就会被抬高，
+      # macOS 12 用户将无法安装。这里直接断言产物 plist，防止静默回归。
+      - name: Assert macOS 12 support
+        run: |
+          set -euo pipefail
+          # 注意：整段不使用会提前退出的 `head`/`awk exit`——在 `pipefail` 下上游工具
+          # 会收到 SIGPIPE，被当成断言失败（本地已验证过这个坑）。
+          APP="$(find electron-app/release -maxdepth 2 -name '*.app' -print | sed -n '1p')"
+          [ -n "$APP" ] || { echo "::error::no .app artifact found"; exit 1; }
+          echo "app: $APP"
+          VER=""
+          for PLIST in \
+            "$APP/Contents/Info.plist" \
+            "$APP/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
+          do
+            [ -f "$PLIST" ] || continue
+            # Electron 43 把该键放在 `Contents/Info.plist`；Framework 内若也有则一并纳入
+            FOUND="$(plutil -p "$PLIST" | awk -F'"' '/LSMinimumSystemVersion/ {print $4}')"
+            [ -n "$FOUND" ] || continue
+            echo "  $PLIST -> LSMinimumSystemVersion=$FOUND"
+            if [ -z "$VER" ] || [ "$(printf '%s\n%s\n' "$VER" "$FOUND" | sort -V | tail -1)" = "$FOUND" ]; then
+              VER="$FOUND"
+            fi
+          done
+          [ -n "$VER" ] || { echo "::error::LSMinimumSystemVersion not found in $APP"; exit 1; }
+          case "$VER" in
+            *.*) MAJ="${VER%%.*}"; MIN="${VER#*.}"; MIN="${MIN%%.*}" ;;
+            *)   MAJ="$VER"; MIN=0 ;;
+          esac
+          if [ "$MAJ" -gt 12 ] || { [ "$MAJ" -eq 12 ] && [ "$MIN" -gt 0 ]; }; then
+            echo "::error::LSMinimumSystemVersion=$VER > 12.0 — 依赖被解析到更高的 Electron 大版本，macOS 12 用户将无法安装"
+            exit 1
+          fi
+          echo "OK: macOS 12 仍受支持 (LSMinimumSystemVersion=$VER)"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-desktop-macos-electron
+          path: electron-app/release/*.dmg
+          if-no-files-found: error

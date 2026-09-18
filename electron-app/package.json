@@ -1,0 +1,16 @@
+{
+  "name": "dsh-desktop-electron",
+  "productName": "DeepSeek Harness Desktop",
+  "version": "0.1.5-rc.1-electron",
+  "description": "DeepSeek Harness Desktop — Electron compatibility build for macOS 12 and older",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac dmg"
+  },
+  "devDependencies": {
+    "electron": "43.7.1",
+    "electron-builder": "^26.0.12"
+  }
+}
