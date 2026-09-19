@@ -86,7 +86,7 @@ jobs:
 
       - name: Sync app version from dsh version
         run: |
-          DSH_VERSION="$(sed -n "s/^const DSH_VERSION = process\.env\.DSH_VERSION || '\([^']*\)'$/\1/p" scripts/build-runtime.mjs | head -1)"
+          DSH_VERSION="$(sed -n "s/^const DSH_VERSION = process\.env\.DSH_VERSION || '\([^']*\)'$/\1/p" ../scripts/build-runtime.mjs | head -1)"
           [ -n "$DSH_VERSION" ] || { echo "::error::cannot parse DSH_VERSION"; exit 1; }
           node -e '
             const fs = require("node:fs")
