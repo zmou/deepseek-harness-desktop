@@ -23,7 +23,7 @@ Tauri 版在 macOS 12 上的白屏问题已由独立的 Electron 兼容版解决
 | 打包配置 | `electron-app/electron-builder.yml`、`electron-app/package.json`（electron 精确锁 43.7.1） |
 | 一键打包脚本 | `scripts/build-mac-electron.sh` |
 | CI 任务 | `.github/workflows/build.yml` → `build-macos-electron`（含门槛断言） |
-| 安装包 | `electron-app/release/DeepSeek-Harness-Desktop_0.1.5-rc.1_x64-electron.dmg`（187 MB） |
+| 安装包 | `electron-app/release/DeepSeek-Harness-Desktop_v0.1.5-rc.1_x64-electron.dmg`（187 MB） |
 | 文档 | `README.md` / `README.en.md` 选版指引与构建章节、`CHANGELOG.md` |
 
 ## 3. 验收矩阵

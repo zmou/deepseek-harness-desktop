@@ -347,12 +347,12 @@ dmg:
 3. cd electron-app && npm install          # 安装 electron + electron-builder（锁版本）
 4. npx electron-builder --mac dmg          # 出 .app + .dmg
 5. 校验产物 Info.plist 的 LSMinimumSystemVersion ≤ 12.0
-6. 重命名 dmg 为 DeepSeek-Harness-Desktop_<ver>_<arch>-electron.dmg
+6. 重命名 dmg 为 DeepSeek-Harness-Desktop_v<ver>_<arch>-electron.dmg
 ```
 
 ### 9.3 版本命名（§10 细则）
 
-- dmg 文件名：`DeepSeek-Harness-Desktop_<dsh版本>_<arch>-electron.dmg`
+- dmg 文件名：`DeepSeek-Harness-Desktop_v<dsh版本>_<arch>-electron.dmg`
 - app 内部 `CFBundleShortVersionString`：`<dsh版本>-electron`
 - `productName` / 应用显示名：`DeepSeek Harness Desktop`（与 Tauri 版一致，仅靠 dmg 文件名区分）
 

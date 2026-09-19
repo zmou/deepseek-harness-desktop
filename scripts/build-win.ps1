@@ -151,6 +151,25 @@ if ($installer) {
     Write-Host ('  安装包  : ' + $installer.FullName)
     Write-Host ('  大小    : ' + $sizeMB + ' MB')
     Write-Host ('  修改时间: ' + $installer.LastWriteTime)
+
+    # 规范化文件名：DeepSeek-Harness-Desktop-Setup_v<version>_<arch>.exe
+    # （Tauri 默认生成 `DeepSeek Harness Desktop_<version>_<arch>-setup.exe`，
+    #   含空格且分隔符不一致；这里按发布规范统一重命名）
+    $ver = [System.IO.File]::ReadAllText((Join-Path $ROOT 'scripts/build-runtime.mjs'))
+    $keyVer = 'process.env.DSH_VERSION || ' + "'"
+    $vi = $ver.IndexOf($keyVer)
+    $vs = $vi + $keyVer.Length
+    $ve = $ver.IndexOf("'", $vs)
+    $curVersion = $ver.Substring($vs, $ve - $vs)
+    # arch：默认 x64；arm64 由构建机决定
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+    $newName = "DeepSeek-Harness-Desktop-Setup_v${curVersion}_${arch}.exe"
+    if ($installer.Name -ne $newName) {
+        $newPath = Join-Path $nsisDir $newName
+        if (Test-Path -LiteralPath $newPath) { Remove-Item -LiteralPath $newPath -Force }
+        Move-Item -LiteralPath $installer.FullName -Destination $newPath -Force
+        Write-Host ('  规范化  : ' + $newName) -ForegroundColor Cyan
+    }
 } else {
     Write-Host "  未找到安装包产物，请检查 $nsisDir" -ForegroundColor Yellow
 }

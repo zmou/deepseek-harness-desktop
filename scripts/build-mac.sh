@@ -2,7 +2,7 @@
 # ============================================================
 # DeepSeek Harness Desktop - macOS 一键打包脚本
 # 用法:  bash scripts/build-mac.sh
-# 产物:  tauri-app/src-tauri/target/release/bundle/dmg/DeepSeek-Harness-Desktop_<version>_<arch>.dmg
+# 产物:  tauri-app/src-tauri/target/release/bundle/dmg/DeepSeek-Harness-Desktop_v<version>_<arch>.dmg
 #        （强压缩重压后的发布用 dmg，<arch> 为 aarch64 或 x64）
 #         tauri-app/src-tauri/target/release/bundle/macos/*.app
 # ============================================================
@@ -58,8 +58,8 @@ DMG_DIR="$ROOT/tauri-app/src-tauri/target/release/bundle/dmg"
 APP="$(ls -dt "$APP_DIR"/*.app 2>/dev/null | head -1 || true)"
 [ -n "$APP" ] || fail "未找到 .app 产物: $APP_DIR"
 
-# 命名与 README 下载表一致：DeepSeek-Harness-Desktop_<version>_<arch>.dmg
-OUT_DMG="$DMG_DIR/DeepSeek-Harness-Desktop_${VERSION}_${ARCH_LABEL}.dmg"
+# 命名与 README 下载表一致：DeepSeek-Harness-Desktop_v<version>_<arch>.dmg
+OUT_DMG="$DMG_DIR/DeepSeek-Harness-Desktop_v${VERSION}_${ARCH_LABEL}.dmg"
 # 临时工作区：staging 放镜像内容，rw 镜像必须放在 staging 目录**外面**。
 # 踩坑记录：若把输出镜像写进 `-srcfolder` 内部（`$STAGE_DIR/rw.dmg`），hdiutil 会挂载新
 # 镜像后把 `$STAGE_DIR` 的内容整个拷进去，而 rw 镜像自己就在这个目录里 —— 边拷边长大，

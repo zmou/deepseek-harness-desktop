@@ -13,7 +13,7 @@
 
 1. 独立 `electron-app/` 工程，完整复刻 Tauri 版全部桌面层能力（规格 §8 对齐清单）
 2. 复用 `build-runtime.mjs` 产物，Electron 43.x 锁定
-3. `electron-builder` 产出 `DeepSeek-Harness-Desktop_<ver>_<arch>-electron.dmg`
+3. `electron-builder` 产出 `DeepSeek-Harness-Desktop_v<ver>_<arch>-electron.dmg`
 4. CI 集成 + 门槛守护 + 文档更新
 5. 通过规格 §12 全部验收（含 macOS 12 实机）
 
@@ -254,13 +254,13 @@
    4) 同步版本号：从 build-runtime.mjs 读 DSH_VERSION，写入 electron-builder.yml / package.json（拼接 -electron）
    5) npx electron-builder --mac dmg
    6) 断言产物 Info.plist 的 LSMinimumSystemVersion ≤ 12.0（不满足即 fail）
-   7) 重命名 dmg → DeepSeek-Harness-Desktop_<ver>_<arch>-electron.dmg
+   7) 重命名 dmg → DeepSeek-Harness-Desktop_v<ver>_<arch>-electron.dmg
    ```
 3. 版本三处同步逻辑抽成脚本内部函数，升级 dsh 时与 `build-win.ps1 -DshVersion` 联动（后续单独补 `-DshVersion` 参数或复用同一版本源）。
 
 **产出**：可一键出包的脚本 + dmg 产物。
 
-**验收**：`bash scripts/build-mac-electron.sh` 出 `DeepSeek-Harness-Desktop_0.1.5-rc.1_aarch64-electron.dmg`；门槛断言通过。
+**验收**：`bash scripts/build-mac-electron.sh` 出 `DeepSeek-Harness-Desktop_v0.1.5-rc.1_aarch64-electron.dmg`；门槛断言通过。
 
 ---
 

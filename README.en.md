@@ -58,7 +58,7 @@ it into a desktop app:
 ## Download
 
 <!-- TODO: add a Windows installer direct link after release (a `latest` link is recommended), e.g.:
-  <a href="https://github.com/<owner>/deepseek-harness-desktop/releases/latest/download/DeepSeek-Harness-Desktop-Setup-v0.1.2-rc.1-x64.exe">
+  <a href="https://github.com/<owner>/deepseek-harness-desktop/releases/latest/download/DeepSeek-Harness-Desktop-Setup_v0.1.2-rc.1_x64.exe">
     <img src="https://img.shields.io/badge/Download-Windows_x64-4D6BFE?style=for-the-badge" alt="Download Windows x64" />
   </a>
 -->
@@ -67,10 +67,10 @@ Download installers from the [Releases](../../releases) page:
 
 | Platform | Installer filename | Status |
 |---|---|---|
-| Windows x64 | `DeepSeek-Harness-Desktop-Setup-v<version>-x64.exe` | ✅ available (local build) |
-| macOS 13+ (default) | `DeepSeek-Harness-Desktop_<version>_aarch64.dmg` / `_x64.dmg` | 🔧 built by CI |
-| macOS 12 and older (compat) | `DeepSeek-Harness-Desktop_<version>_aarch64-electron.dmg` / `_x64-electron.dmg` | 🔧 built by CI |
-| Linux x64 | `DeepSeek-Harness-Desktop_<version>_amd64.deb` / `.AppImage` | 🔧 built by CI |
+| Windows x64 | `DeepSeek-Harness-Desktop-Setup_v<version>_x64.exe` | ✅ available (local build) |
+| macOS 13+ (default) | `DeepSeek-Harness-Desktop_v<version>_aarch64.dmg` / `_x64.dmg` | 🔧 built by CI |
+| macOS 12 and older (compat) | `DeepSeek-Harness-Desktop_v<version>_aarch64-electron.dmg` / `_x64-electron.dmg` | 🔧 built by CI |
+| Linux x64 | `DeepSeek-Harness-Desktop_v<version>_amd64.deb` / `.AppImage` | 🔧 built by CI |
 
 ### Which macOS build do I need?
 
@@ -132,7 +132,7 @@ bash scripts/build-mac.sh
 ```bash
 # Requirements: Node.js >= 22.19, npm (hdiutil ships with macOS)
 bash scripts/build-mac-electron.sh
-# Output: electron-app/release/DeepSeek-Harness-Desktop_<version>_<arch>-electron.dmg
+# Output: electron-app/release/DeepSeek-Harness-Desktop_v<version>_<arch>-electron.dmg
 ```
 
 - A **fully independent** toolchain (Electron 43 + bundled Chromium) that only reuses the runtime

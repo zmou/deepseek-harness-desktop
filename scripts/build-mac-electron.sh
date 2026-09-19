@@ -5,7 +5,7 @@
 # 用法:  bash scripts/build-mac-electron.sh
 #         DSH_VERSION=0.1.6 bash scripts/build-mac-electron.sh   # 覆盖 dsh 版本
 #
-# 产物:  electron-app/release/DeepSeek-Harness-Desktop_<version>_<arch>-electron.dmg
+# 产物:  electron-app/release/DeepSeek-Harness-Desktop_v<version>_<arch>-electron.dmg
 #        （<arch> 为 aarch64 或 x64；与 Tauri 默认版 dmg 靠 -electron 后缀区分）
 #
 # 与 Tauri 版链路完全独立：仅复用 scripts/build-runtime.mjs 的运行时产物。
@@ -138,7 +138,7 @@ if [ "$ARCH" = "arm64" ]; then ARCH_LABEL="aarch64"; else ARCH_LABEL="x64"; fi
 SRC_DMG="$(ls -t "$RELEASE_DIR"/*.dmg 2>/dev/null | head -1 || true)"
 [ -n "$SRC_DMG" ] || fail "未找到 dmg 产物: $RELEASE_DIR/*.dmg"
 
-OUT_DMG="$RELEASE_DIR/DeepSeek-Harness-Desktop_${DSH_VERSION}_${ARCH_LABEL}-electron.dmg"
+OUT_DMG="$RELEASE_DIR/DeepSeek-Harness-Desktop_v${DSH_VERSION}_${ARCH_LABEL}-electron.dmg"
 if [ "$SRC_DMG" != "$OUT_DMG" ]; then
   mv -f "$SRC_DMG" "$OUT_DMG"
 fi

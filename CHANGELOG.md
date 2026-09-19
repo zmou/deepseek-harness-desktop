@@ -29,7 +29,7 @@
 - 修复 CI：tauri CLI 工作目录、Linux 打包目标、产物上传路径
 - 新增 `tauri.linux.conf.json`（Linux 打包目标 deb + AppImage）
 - 修复 `cargo check` 依赖占位目录的问题（`resources/runtime/.gitkeep`）
-- 命名规范化：`productName` → `DeepSeek Harness Desktop`（全名，用于安装目录/开始菜单/卸载列表/任务管理器），`mainBinaryName` 保持 `dsh-desktop`（exe 文件名），安装包文件名统一为 `DeepSeek-Harness-Desktop-Setup-v<version>-<arch>.exe`
+- 命名规范化：`productName` → `DeepSeek Harness Desktop`（全名，用于安装目录/开始菜单/卸载列表/任务管理器），`mainBinaryName` 保持 `dsh-desktop`（exe 文件名），安装包文件名统一为 `DeepSeek-Harness-Desktop[-Setup]_v<version>_<arch>[-electron].<ext>`（Windows 带 `Setup` 词、mac 兼容版带 `-electron` 后缀）
 
 ## [0.1.2-rc.1] - 2026-09-07
 

@@ -57,7 +57,7 @@
 ## 下载
 
 <!-- TODO: 发布后在此放入 Windows 安装包直链（推荐 latest 链接），例如：
-  <a href="https://github.com/<owner>/deepseek-harness-desktop/releases/latest/download/DeepSeek-Harness-Desktop-Setup-v0.1.2-rc.1-x64.exe">
+  <a href="https://github.com/<owner>/deepseek-harness-desktop/releases/latest/download/DeepSeek-Harness-Desktop-Setup_v0.1.2-rc.1_x64.exe">
     <img src="https://img.shields.io/badge/Download-Windows_x64-4D6BFE?style=for-the-badge" alt="Download Windows x64" />
   </a>
 -->
@@ -66,10 +66,10 @@
 
 | 平台 | 安装包文件名 | 状态 |
 |---|---|---|
-| Windows x64 | `DeepSeek-Harness-Desktop-Setup-v<version>-x64.exe` | ✅ 已提供（本机构建） |
-| macOS 13+（默认版） | `DeepSeek-Harness-Desktop_<version>_aarch64.dmg` / `_x64.dmg` | 🔧 由 CI 构建 |
-| macOS 12 及以下（兼容版） | `DeepSeek-Harness-Desktop_<version>_aarch64-electron.dmg` / `_x64-electron.dmg` | 🔧 由 CI 构建 |
-| Linux x64 | `DeepSeek-Harness-Desktop_<version>_amd64.deb` / `.AppImage` | 🔧 由 CI 构建 |
+| Windows x64 | `DeepSeek-Harness-Desktop-Setup_v<version>_x64.exe` | ✅ 已提供（本机构建） |
+| macOS 13+（默认版） | `DeepSeek-Harness-Desktop_v<version>_aarch64.dmg` / `_x64.dmg` | 🔧 由 CI 构建 |
+| macOS 12 及以下（兼容版） | `DeepSeek-Harness-Desktop_v<version>_aarch64-electron.dmg` / `_x64-electron.dmg` | 🔧 由 CI 构建 |
+| Linux x64 | `DeepSeek-Harness-Desktop_v<version>_amd64.deb` / `.AppImage` | 🔧 由 CI 构建 |
 
 ### macOS 选哪个包
 
@@ -130,7 +130,7 @@ bash scripts/build-mac.sh
 ```bash
 # 依赖：Node.js ≥ 22.19、npm（hdiutil 随 macOS 内置）
 bash scripts/build-mac-electron.sh
-# 产物：electron-app/release/DeepSeek-Harness-Desktop_<version>_<arch>-electron.dmg
+# 产物：electron-app/release/DeepSeek-Harness-Desktop_v<version>_<arch>-electron.dmg
 ```
 
 - 与默认版**完全独立**的一条链路（Electron 43 + 内嵌 Chromium），只复用 `scripts/build-runtime.mjs` 的运行时产物
