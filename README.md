@@ -67,13 +67,25 @@
 | 平台 | 安装包文件名 | 状态 |
 |---|---|---|
 | Windows x64 | `DeepSeek-Harness-Desktop-Setup_v<version>_x64.exe` | ✅ 已提供（本机构建） |
-| macOS 13+（默认版） | `DeepSeek-Harness-Desktop_v<version>_aarch64.dmg` / `_x64.dmg` | 🔧 由 CI 构建 |
-| macOS 12 及以下（兼容版） | `DeepSeek-Harness-Desktop_v<version>_aarch64-electron.dmg` / `_x64-electron.dmg` | 🔧 由 CI 构建 |
+| macOS 13+（Apple Silicon） | `DeepSeek-Harness-Desktop_v<version>_aarch64.dmg` | 🔧 由 CI 构建 |
+| macOS 13+（Intel） | `DeepSeek-Harness-Desktop_v<version>_x64.dmg` | 🖥️ 本机 Intel Mac 构建 |
+| macOS 12 及以下（Apple Silicon） | `DeepSeek-Harness-Desktop_v<version>_aarch64-electron.dmg` | 🔧 由 CI 构建 |
+| macOS 12 及以下（Intel） | `DeepSeek-Harness-Desktop_v<version>_x64-electron.dmg` | 🖥️ 本机 Intel Mac 构建 |
 | Linux x64 | `DeepSeek-Harness-Desktop_v<version>_amd64.deb` / `.AppImage` | 🔧 由 CI 构建 |
 
 ### macOS 选哪个包
 
-macOS 上有**两个内核不同**的产物，靠文件名后缀区分：
+macOS 有 **两个内核**（默认版 / 兼容版）× **两种芯片**（Apple Silicon / Intel）共 4 个安装包，
+按「芯片 + 内核」两个维度选择：
+
+**第一步，看芯片**（点左上角  →「关于本机」→「处理器/芯片」）：
+
+| 芯片 | 架构后缀 |
+|---|---|
+| Apple Silicon（M1/M2/M3/M4…） | `aarch64` |
+| Intel | `x64` |
+
+**第二步，看内核**（靠文件名后缀区分）：
 
 | | 默认版（无后缀） | 兼容版（`-electron` 后缀） |
 |---|---|---|
@@ -82,8 +94,8 @@ macOS 上有**两个内核不同**的产物，靠文件名后缀区分：
 | 安装包体积 | 更小 | 约 187 MB（含内嵌 Chromium） |
 | 适用场景 | 推荐，系统能升级就用它 | 系统停留在 macOS 12 时的选择 |
 
-> **怎么选**：先试默认版；若在 macOS 12 上打开后**白屏**（系统 WebView 太旧，解析不了官方前端 bundle），
-> 再换带 `-electron` 后缀的兼容版。
+> **怎么选**：先按芯片选对架构，再先试默认版；若在 macOS 12 上打开后**白屏**
+> （系统 WebView 太旧，解析不了官方前端 bundle），再换带 `-electron` 后缀的兼容版。
 > 两版数据完全互通（会话 / 配置 / 凭据都在 `~/.dsh`），桌面层能力一致，可在两者之间直接切换。
 
 > **兼容版的长期建议**：Electron 43 是官方支持 macOS 12 的最后一档，Chromium 安全更新会逐步停止。

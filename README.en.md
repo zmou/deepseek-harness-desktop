@@ -68,13 +68,25 @@ Download installers from the [Releases](../../releases) page:
 | Platform | Installer filename | Status |
 |---|---|---|
 | Windows x64 | `DeepSeek-Harness-Desktop-Setup_v<version>_x64.exe` | ✅ available (local build) |
-| macOS 13+ (default) | `DeepSeek-Harness-Desktop_v<version>_aarch64.dmg` / `_x64.dmg` | 🔧 built by CI |
-| macOS 12 and older (compat) | `DeepSeek-Harness-Desktop_v<version>_aarch64-electron.dmg` / `_x64-electron.dmg` | 🔧 built by CI |
+| macOS 13+ (Apple Silicon) | `DeepSeek-Harness-Desktop_v<version>_aarch64.dmg` | 🔧 built by CI |
+| macOS 13+ (Intel) | `DeepSeek-Harness-Desktop_v<version>_x64.dmg` | 🖥️ built on local Intel Mac |
+| macOS 12 and older (Apple Silicon) | `DeepSeek-Harness-Desktop_v<version>_aarch64-electron.dmg` | 🔧 built by CI |
+| macOS 12 and older (Intel) | `DeepSeek-Harness-Desktop_v<version>_x64-electron.dmg` | 🖥️ built on local Intel Mac |
 | Linux x64 | `DeepSeek-Harness-Desktop_v<version>_amd64.deb` / `.AppImage` | 🔧 built by CI |
 
 ### Which macOS build do I need?
 
-macOS ships **two builds with different engines**, distinguished by the filename suffix:
+macOS ships **2 engines** (default / compat) × **2 chips** (Apple Silicon / Intel) = 4 installers.
+Choose by **chip first, then engine**:
+
+**Step 1 — chip** ( → "About This Mac" → "Chip"/"Processor"):
+
+| Chip | Architecture suffix |
+|---|---|
+| Apple Silicon (M1/M2/M3/M4…) | `aarch64` |
+| Intel | `x64` |
+
+**Step 2 — engine** (distinguished by the filename suffix):
 
 | | Default (no suffix) | Compat (`-electron` suffix) |
 |---|---|---|
@@ -83,8 +95,10 @@ macOS ships **two builds with different engines**, distinguished by the filename
 | Installer size | smaller | ~187 MB (bundles Chromium) |
 | When to use | Recommended whenever you can upgrade | For machines stuck on macOS 12 |
 
-> **How to choose**: try the default build first; if it opens to a **blank/white screen** on macOS 12
-> (the system WebView is too old to parse the official frontend bundle), switch to the `-electron` build.
+> **How to choose**: pick the architecture matching your chip, then try the default build first; if it opens
+> to a **blank/white screen** on macOS 12 (the system WebView is too old to parse the official frontend
+> bundle), switch to the `-electron` build. Both builds share the same data (sessions / configs /
+> credentials under `~/.dsh`) and the same desktop-layer features, so you can switch freely.
 
 > **Long-term note on the compat build**: Electron 43 is the last release line that supports macOS 12,
 > so Chromium security updates will gradually stop. Treat it as a **stopgap** and move back to the

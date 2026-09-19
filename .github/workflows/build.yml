@@ -7,6 +7,9 @@ on:
       - 'v*'
 
 jobs:
+  # 三端 Tauri 主构建。macOS 部分跑在 `macos-latest`（Apple Silicon / arm64）：
+  # 免费 Intel runner（macos-13）已于 2025-12 退役，CI 只能产出 arm64 dmg。
+  # macOS x64（Intel）包由维护者在本地 Intel Mac 上用 scripts/build-mac.sh 打包后手动上传。
   build:
     strategy:
       fail-fast: false
@@ -16,7 +19,7 @@ jobs:
             artifact: 'nsis/*.exe'
           - platform: macos-latest
             artifact: '**/*.dmg'
-          - platform: ubuntu-latest
+          - platform: ubuntu-22.04
             artifact: '**/*.deb|**/*.AppImage'
 
     runs-on: ${{ matrix.platform }}
@@ -34,25 +37,36 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-latest'
+        if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            libfuse2
 
-      - name: Build runtime (node + dsh)
+      - name: Build runtime (Windows short staging)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          # NSIS still uses the legacy Windows path APIs. Keep the source tree
+          # short enough for deeply nested npm dependencies.
+          DSH_RUNTIME_DIR: 'D:\rt'
         run: node scripts/build-runtime.mjs
 
-      - name: Build app
-        env:
-          # macOS 公证/Windows 签名：先用 ad-hoc 签名占位，正式证书后补
-          APPLE_CERTIFICATE: ''
-          APPLE_CERTIFICATE_PASSWORD: ''
-          APPLE_SIGNING_IDENTITY: '-'
-          APPLE_ID: ''
-          APPLE_PASSWORD: ''
-          APPLE_TEAM_ID: ''
-          TAURI_SIGNING_PRIVATE_KEY: ''
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+      - name: Build runtime (macOS/Linux)
+        if: matrix.platform != 'windows-latest'
+        run: node scripts/build-runtime.mjs
+
+      - name: Build app (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        working-directory: tauri-app/src-tauri
+        run: npx -y @tauri-apps/cli build --config tauri.ci.windows.conf.json
+
+      - name: Build app (macOS/Linux)
+        if: matrix.platform != 'windows-latest'
         working-directory: tauri-app/src-tauri
         run: npx -y @tauri-apps/cli build
 
@@ -65,6 +79,7 @@ jobs:
 
   # macOS 12 及以下兼容版（Electron 43）：与 Tauri 链路完全独立，只共享 runtime 产物。
   # 规格依据：docs/electron-macos-compat-spec.md §11
+  # 同样跑在 macos-latest（arm64）上：CI 只产 arm64；x64（Intel）由本地 Intel Mac 打包上传。
   build-macos-electron:
     runs-on: macos-latest
 
@@ -98,7 +113,8 @@ jobs:
 
       - name: Build Electron dmg
         working-directory: electron-app
-        run: npx electron-builder --mac dmg --publish never
+        # 显式 --arm64：CI runner 是 Apple Silicon；x64 由本地 Intel Mac 打包（build-mac-electron.sh）
+        run: npx electron-builder --mac dmg --arm64 --publish never
 
       # 门槛守护：Electron 大版本一旦越过 43，产物最低系统版本就会被抬高，
       # macOS 12 用户将无法安装。这里直接断言产物 plist，防止静默回归。
