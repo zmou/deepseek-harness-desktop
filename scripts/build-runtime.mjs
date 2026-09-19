@@ -48,7 +48,7 @@ const NODE_BASE_URL = process.env.NODE_MIRROR || 'https://nodejs.org/dist'
 //   2. tauri-app/src-tauri/tauri.conf.json 的 version
 //   3. tauri-app/src-tauri/Cargo.toml 的 version
 // 或用 scripts/build-win.ps1 -DshVersion <version> 一键同步。
-const DSH_VERSION = process.env.DSH_VERSION || '0.1.5-rc.1'
+const DSH_VERSION = process.env.DSH_VERSION || '0.1.5-rc.2'
 
 // glob 兜底排除的依赖 / 构建产物目录（见 patchGlobTool 说明）
 const BULK_DIRS = [
