@@ -121,9 +121,60 @@ if ($DshVersion -ne '') {
     }
 }
 
-# ---------- [3/5] 构建 runtime ----------
+# ---------- [3/5a] 构建 runtime 前：清理 runtime 工作区 ----------
+# 原则：每次打包都从干净的 runtime 工作区开始，避免历史残留混入安装包。
+# 只清 runtime 相关残留，不做 cargo clean（增量编译有指纹校验，不会污染产物，
+# 但全量重编会把 4 分钟拉到 15-25 分钟）。
 Write-Host ''
-Write-Host '[3/5] 构建 runtime（node + npm install dsh + 应用 glob 补丁）...' -ForegroundColor Yellow
+Write-Host '[3/5a] 清理 runtime 工作区...' -ForegroundColor Yellow
+
+$resourcesDir = Join-Path $ROOT 'tauri-app/resources'
+$runtimeDir   = Join-Path $resourcesDir 'runtime'
+$backupDir    = Join-Path $resourcesDir '.dsh-runtime-backup'
+
+# (a) runtime/ 内部的失败残留 dsh-runtime.failed-*：位于资源根内，
+#     会被 Tauri 原样打进安装包（等于多打一份 runtime，体积翻倍）。
+#     超长路径（实测最长 273 字符）需用 robocopy 空目录镜像绕过 MAX_PATH。
+$failed = @(Get-ChildItem -LiteralPath $runtimeDir -Directory -Filter 'dsh-runtime.failed-*' -ErrorAction SilentlyContinue)
+if ($failed.Count -gt 0) {
+    $stub = Join-Path $env:TEMP ('dsh-empty-stub-' + $PID)
+    New-Item -ItemType Directory -Force -Path $stub | Out-Null
+    foreach ($f in $failed) {
+        Write-Host ('  清除 runtime 内失败残留: ' + $f.Name) -ForegroundColor Gray
+        & robocopy $stub $f.FullName /MIR /NFL /NDL /NJH /NJS /NC /NS /NP /MT:16 | Out-Null
+        if ($LASTEXITCODE -gt 7) { Fail ('robocopy 清理失败: ' + $f.FullName) }
+        Remove-Item -LiteralPath $f.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $f.FullName) { Fail ('无法清除会污染安装包的残留: ' + $f.FullName) }
+    }
+    Remove-Item -LiteralPath $stub -Recurse -Force -ErrorAction SilentlyContinue
+} else {
+    Write-Host '  runtime/ 内无失败残留' -ForegroundColor Gray
+}
+
+# (b) 备份目录：位于 runtime/ 之外（不打包），只保留最新 1 份作回滚点。
+if (Test-Path -LiteralPath $backupDir) {
+    $backups = @(Get-ChildItem -LiteralPath $backupDir -Directory -Filter 'dsh-runtime.*' -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending)
+    if ($backups.Count -gt 1) {
+        $stub = Join-Path $env:TEMP ('dsh-empty-stub-' + $PID)
+        New-Item -ItemType Directory -Force -Path $stub | Out-Null
+        foreach ($b in ($backups | Select-Object -Skip 1)) {
+            $sizeMB = [math]::Round((Get-ChildItem -LiteralPath $b.FullName -Recurse -File -ErrorAction SilentlyContinue |
+                Measure-Object Length -Sum).Sum / 1MB, 1)
+            Write-Host ('  清除旧备份: ' + $b.Name + ' (' + $sizeMB + ' MB)') -ForegroundColor Gray
+            & robocopy $stub $b.FullName /MIR /NFL /NDL /NJH /NJS /NC /NS /NP /MT:16 | Out-Null
+            if ($LASTEXITCODE -gt 7) { Fail ('robocopy 清理备份失败: ' + $b.FullName) }
+            Remove-Item -LiteralPath $b.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item -LiteralPath $stub -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host ('  已保留最新备份: ' + $backups[0].Name) -ForegroundColor Gray
+    } else {
+        Write-Host '  备份目录无需清理' -ForegroundColor Gray
+    }
+}
+# ---------- [3/5b] 构建 runtime ----------
+Write-Host ''
+Write-Host '[3/5b] 构建 runtime（node + npm install dsh + 应用 glob 补丁）...' -ForegroundColor Yellow
 Write-Host '      首次或换版本时需联网下载依赖，可能耗时数分钟到十几分钟' -ForegroundColor Gray
 & node $brPath
 if ($LASTEXITCODE -ne 0) { Fail 'runtime 构建失败' }

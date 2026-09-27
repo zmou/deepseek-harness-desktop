@@ -6,7 +6,7 @@
 // 用法：node scripts/build-runtime.mjs
 // 环境变量：NODE_VERSION 覆盖默认 node 版本；NODE_MIRROR 覆盖下载源
 
-import { execSync } from 'node:child_process'
+import { execSync, spawnSync } from 'node:child_process'
 import {
   existsSync,
   mkdirSync,
@@ -48,7 +48,7 @@ const NODE_BASE_URL = process.env.NODE_MIRROR || 'https://nodejs.org/dist'
 //   2. tauri-app/src-tauri/tauri.conf.json 的 version
 //   3. tauri-app/src-tauri/Cargo.toml 的 version
 // 或用 scripts/build-win.ps1 -DshVersion <version> 一键同步。
-const DSH_VERSION = process.env.DSH_VERSION || '0.1.5-rc.2'
+const DSH_VERSION = process.env.DSH_VERSION || '0.1.7-rc.2'
 
 // glob 兜底排除的依赖 / 构建产物目录（见 patchGlobTool 说明）
 const BULK_DIRS = [
@@ -328,6 +328,129 @@ function installDsh() {
   console.log(`[build-runtime] dsh ${DSH_VERSION} installed`)
 }
 
+/**
+ * 清理 `.dsh-runtime-backup/` 里过期的历史 runtime，只保留最近 KEEP 份作为回滚点。
+ *
+ * 为什么需要：每次换版本安装都会把旧 runtime 整体 rename 到备份目录，而备份位于
+ * `resources/` 下（不在 `runtime/` 内，因此不会被打进安装包），但它会持续累积——
+ * 实测 3 份历史 runtime 就占了 551.7 MB。
+ *
+ * 为什么不用 rmSync/Remove-Item 递归删除：备份树里存在超过 260 字符的路径
+ * （实测最长 273 字符，如 @opentelemetry/otlp-transformer 下的 .d.ts/.js.map），
+ * 而 Windows 默认未启用长路径（LongPathsEnabled=0），Node 的 rmSync 与 PowerShell
+ * 的 Remove-Item 都会在中途失败并残留约 88 个文件。实测 robocopy 的 /MIR 用空目录
+ * 镜像源树可以突破 MAX_PATH 限制，清空后再删空壳目录即可。
+ *
+ * 平台约束：robocopy 仅 Windows 存在；非 Windows 走普通删除（POSIX 无 MAX_PATH 问题）。
+ */
+const BACKUP_KEEP = Number(process.env.DSH_BACKUP_KEEP || 1)
+
+/** 用空目录镜像目标树，绕过 Windows MAX_PATH 限制清空内容。 */
+function emptyDirLongPathAware(dir) {
+  if (process.platform === 'win32') {
+    // robocopy 退出码 0-7 属正常（1=有文件被复制/删除，2=有额外文件被删，3=1+2）
+    const stub = join(dirname(dir), `.dsh-empty-stub-${process.pid}`)
+    mkdirSync(stub, { recursive: true })
+    try {
+      const code = spawnSync(
+        'robocopy',
+        [stub, dir, '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/NC', '/NS', '/NP', '/MT:16'],
+        { stdio: 'ignore' },
+      ).status
+      if (code === null || code > 7) {
+        throw new Error(`robocopy failed with exit code ${code}`)
+      }
+    } finally {
+      rmSync(stub, { recursive: true, force: true })
+    }
+  }
+  // 清空后目录只剩空壳，普通删除即可（rmSync 对空树无长路径压力）
+  rmSync(dir, { recursive: true, force: true })
+}
+
+function pruneOldBackups() {
+  const backupRoot = join(dirname(RUNTIME_DIR), '.dsh-runtime-backup')
+  if (!existsSync(backupRoot)) return
+
+  let entries
+  try {
+    entries = readdirSync(backupRoot, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith('dsh-runtime.'))
+      .map((e) => ({ name: e.name, full: join(backupRoot, e.name) }))
+  } catch {
+    return
+  }
+  if (entries.length <= BACKUP_KEEP) {
+    console.log(
+      `[build-runtime] backups: ${entries.length} kept (limit ${BACKUP_KEEP}), nothing to prune`,
+    )
+    return
+  }
+
+  // 目录名内含 ISO 时间戳，按名字降序即时间降序
+  entries.sort((a, b) => b.name.localeCompare(a.name))
+  const doomed = entries.slice(BACKUP_KEEP)
+  let freed = 0
+  let removed = 0
+
+  for (const item of doomed) {
+    const size = dirSize(item.full)
+    try {
+      emptyDirLongPathAware(item.full)
+      freed += size
+      removed++
+    } catch (error) {
+      console.log(`[build-runtime] could not prune ${item.name}: ${error.message}`)
+    }
+  }
+
+  console.log(
+    `[build-runtime] pruned ${removed}/${doomed.length} old runtime backups` +
+      ` (-${(freed / 1024 / 1024).toFixed(1)} MB), kept newest ${BACKUP_KEEP}`,
+  )
+}
+
+/**
+ * 清除 `runtime/` 目录内部的安装失败残留（`dsh-runtime.failed-*`）。
+ *
+ * 为什么必须清：installDsh() 回滚时会用 `renameSync(DSH_DIR, DSH_DIR + '.failed-<ts>')`
+ * 给失败的半成品改名，此时若整个构建流程被中断（Ctrl-C、磁盘满），该目录会留在
+ * `runtime/` 内部 —— 而 `runtime/` 正是 Tauri 声明的唯一资源根
+ * （`resources: { "../resources/runtime/": "runtime/" }`），因此它会被原样打进安装包，
+ * 等于把一份完整的 runtime 重复打包，安装包体积直接翻倍。
+ *
+ * 注意区分两类目录：
+ *   - `resources/.dsh-runtime-backup/`（runtime/ 之外）：不打包，按 BACKUP_KEEP 保留最新若干份
+ *   - `runtime/dsh-runtime.failed-*`（runtime/ 之内）：会打包，必须全部清除
+ */
+function purgeFailedResidue() {
+  let removed = 0
+  let freed = 0
+  for (const entry of readdirSync(RUNTIME_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    if (!entry.name.startsWith('dsh-runtime.failed-')) continue
+    const full = join(RUNTIME_DIR, entry.name)
+    const size = dirSize(full)
+    try {
+      emptyDirLongPathAware(full)
+      freed += size
+      removed++
+      console.log(`[build-runtime] purged failed residue inside runtime/: ${entry.name}`)
+    } catch (error) {
+      // 留着会被打进安装包，属于必须暴露的失败
+      throw new Error(
+        `[build-runtime] cannot purge ${entry.name} inside runtime/ `
+        + `(it would be bundled into the installer): ${error.message}`,
+      )
+    }
+  }
+  if (removed > 0) {
+    console.log(
+      `[build-runtime] purged ${removed} failed residue dir(s) (-${(freed / 1024 / 1024).toFixed(1)} MB)`,
+    )
+  }
+}
+
 function verify() {
   const info = distInfo()
   const nodeBin = join(NODE_DIR, info.bin)
@@ -590,6 +713,10 @@ async function main() {
   delete process.env.NODE_OPTIONS
 
   console.log(`[build-runtime] platform: ${process.platform}-${process.arch}, node ${NODE_VERSION}`)
+  // 先清 runtime/ 内部的失败残留：它会被 Tauri 打进安装包（体积翻倍），
+  // 必须在任何构建动作之前移除，而不是等到最后。
+  mkdirSync(RUNTIME_DIR, { recursive: true })
+  purgeFailedResidue()
   await downloadNode()
   installDsh()
   materializeTopLevelLinks()
@@ -600,6 +727,9 @@ async function main() {
   // （patch 要读 lib/index.js，被删了会炸），且在 verify 之前（verify 直接
   // 反映最终产物体积）。
   pruneDevArtifacts()
+  // 清理过期备份（保留最新 BACKUP_KEEP 份作回滚点）：必须在 installDsh() 之后，
+  // 因为本次产生的备份要计入「最新一份」而不能被立刻删掉。
+  pruneOldBackups()
   verify()
   console.log('[build-runtime] done')
 }
