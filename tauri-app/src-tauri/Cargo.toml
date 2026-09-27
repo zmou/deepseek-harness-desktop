@@ -1,6 +1,6 @@
 [package]
 name = "dsh-desktop"
-version = "0.1.5-rc.2"
+version = "0.1.7-rc.2"
 description = "DeepSeek Harness Desktop"
 edition = "2021"
 
