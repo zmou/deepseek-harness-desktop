@@ -15,6 +15,8 @@ directories:
 files:
   - src/**
   - package.json
+  # 托盘图标：Tray 需要运行时图标文件（buildResources 只用于构建期，不会进 asar）
+  - icons/icon.png
 
 extraResources:
   # 复用 build-runtime.mjs 产物，打进 Contents/Resources/runtime/

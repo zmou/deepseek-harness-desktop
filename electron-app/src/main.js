@@ -8,7 +8,7 @@
  * 两套壳零耦合，仅共享 `tauri-app/resources/runtime/` 这一份只读运行时产物。
  */
 
-const { app, BrowserWindow, dialog, net, session } = require('electron')
+const { app, BrowserWindow, dialog, Menu, Tray, net, session } = require('electron')
 const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -29,10 +29,18 @@ const READY_URL_RE = /dsh web: (http:\/\/[^\s]+)/
 const READY_URL_TIMEOUT_MS = 30 * 1000
 /** 「记住上次下载目录」的状态文件名（落在 `app.getPath('userData')`）。 */
 const LAST_DOWNLOAD_DIR_FILE = 'last-download-dir.txt'
+/** 托盘 tooltip。 */
+const TRAY_TOOLTIP = 'DeepSeek Harness Desktop'
+/** 托盘菜单项文本（规格 §4.2：顺序固定，仅两项，无分隔线）。 */
+const MENU_ITEM_OPEN = '打开主界面'
+const MENU_ITEM_QUIT = '退出'
 
 let child = null
 let mainWindow = null
+/** 显式退出状态：仅托盘菜单「退出」置位。置位后窗口 close 不再被拦截为隐藏。 */
 let quitting = false
+/** 托盘图标实例：必须由主进程变量长期持有，否则会被 GC / 无法响应事件（规格 §7.1）。 */
+let tray = null
 
 // 代理抗性（1/2）：必须在 app ready 之前追加开关。
 // 本机代理（Clash/mihomo 等）会把 localhost 的 HTTP/WebSocket 也代理出去，
@@ -48,23 +56,42 @@ if (!app.requestSingleInstanceLock()) {
 
 function start() {
   app.on('second-instance', () => {
-    if (!mainWindow) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
+    log('[single-instance] second instance; restoring main window')
+    showMainWindow()
   })
 
+  // macOS：点击 Dock 图标时恢复主窗口（可能已隐藏到托盘 / 最小化）。
+  // 与 Tauri 版 `RunEvent::Reopen` 语义一致，保证托盘隐藏后 Dock 点击仍能恢复。
+  app.on('activate', () => {
+    if (mainWindow) {
+      log('[app] activate; restoring main window')
+      showMainWindow()
+    }
+  })
+
+  // 用户关闭已被 close 拦截为隐藏，因此「所有窗口真正关闭」只可能发生在
+  // 显式退出或 child 异常退出路径（两者均已置位 quitting）。此时应退出应用，
+  // 与 Tauri 版「最后一个窗口销毁即触发退出」行为一致（规格 §7.3）。
   app.on('window-all-closed', () => {
-    // macOS 下与 Tauri 版行为一致：关闭窗口即回收子进程并退出
+    log('[app] all windows closed; quitting')
     quitting = true
     killChild()
     app.quit()
   })
 
-  // 兜底：任何退出路径都回收子进程
+  // 兜底：任何退出路径都回收子进程，且必须在窗口 close 事件之前置位 quitting，
+  // 否则主动关闭窗口会被 close 拦截再次隐藏（规格 §7.3 / §4.5）。
   app.on('before-quit', () => {
     quitting = true
     killChild()
+  })
+
+  // 退出前销毁托盘图标，避免应用退出后残留失效图标（规格 §4.1）。
+  app.on('will-quit', () => {
+    if (tray) {
+      tray.destroy()
+      tray = null
+    }
   })
 
   // 外部信号（如活动监视器「退出」、`kill <pid>`）也要回收，避免 node 子进程成为孤儿
@@ -87,6 +114,23 @@ function start() {
     })
 }
 
+/**
+ * 统一的主窗口恢复函数：供 second-instance、托盘双击、菜单「打开主界面」、
+ * macOS activate 共同调用。
+ *
+ * - 窗口已销毁时安全返回；
+ * - 最小化时先 restore；
+ * - show + focus。
+ * 不重新执行 startDsh()，也不创建新的 BrowserWindow（规格 §7.2）。
+ */
+function showMainWindow() {
+  if (!mainWindow) return
+  if (mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
 async function onReady() {
   // 代理抗性（2/2）：Chromium 网络栈直连。
   // LLM 等外网请求由 dsh 的 node 进程发起（不走 Chromium），故此处直连不影响模型调用。
@@ -98,8 +142,63 @@ async function onReady() {
 
   session.defaultSession.on('will-download', handleWillDownload)
 
+  // 托盘必须与窗口同时就绪：在窗口创建前初始化，保证关闭按钮可用时托盘已存在（规格 §7.1）。
+  try {
+    createTray()
+  } catch (error) {
+    // 托盘是「关闭即隐藏」语义的前提（规格 §8.1）：
+    // 初始化失败不能静默创建「关闭后不可恢复」的隐藏窗口，直接按启动失败退出。
+    log(`[tray] tray initialization failed: ${messageOf(error)}`)
+    quitting = true
+    killChild()
+    app.quit()
+    return
+  }
+
   const readyUrl = await startDsh()
   createWindow(readyUrl)
+}
+
+/**
+ * 创建唯一托盘实例（幂等）：菜单仅含「打开主界面」「退出」两项，
+ * 双击与「打开主界面」共用同一恢复函数。
+ *
+ * 托盘对象必须由主进程变量（模块级 `tray`）长期持有（规格 §7.1）。
+ */
+function createTray() {
+  if (tray) return
+  const iconPath = path.join(__dirname, '..', 'icons', 'icon.png')
+  tray = new Tray(iconPath)
+  tray.setToolTip(TRAY_TOOLTIP)
+  const menu = Menu.buildFromTemplate([
+    { label: MENU_ITEM_OPEN, click: () => showMainWindow() },
+    {
+      label: MENU_ITEM_QUIT,
+      click: () => {
+        log('[tray] explicit quit requested')
+        requestQuit()
+      },
+    },
+  ])
+  tray.setContextMenu(menu)
+  // 双击托盘图标 -> 恢复并聚焦主窗口（与「打开主界面」同一函数）。
+  tray.on('double-click', () => {
+    log('[tray] double-click; restoring main window')
+    showMainWindow()
+  })
+  log('[tray] tray icon created')
+}
+
+/**
+ * 统一退出入口：置位退出状态并真正退出应用。
+ *
+ * 幂等：重复点击「退出」或退出过程中再次触发不会重复回收 / 死锁。
+ * dsh child 的回收由 `before-quit` 统一处理。
+ */
+function requestQuit() {
+  if (quitting) return
+  quitting = true
+  app.quit()
 }
 
 /**
@@ -178,6 +277,17 @@ function createWindow(readyUrl) {
   mainWindow = win
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
+  })
+
+  // 关闭拦截：区分用户关闭与应用主动退出（规格 §7.3）。
+  // - 未进入退出状态：preventDefault + hide（关闭到托盘，dsh child 继续运行）。
+  // - 已进入退出状态（托盘「退出」/ 系统退出）：放行，窗口真正关闭。
+  // - dsh child 异常退出路径会先置位退出状态再关窗，因此不会被再次隐藏（§7.4）。
+  win.on('close', (event) => {
+    if (quitting) return
+    log('[tray] close requested; hiding to tray')
+    event.preventDefault()
+    win.hide()
   })
 
   // 隐藏官方 Session 导出乐观弹窗（与真实「另存为」流程去重）
@@ -328,16 +438,20 @@ function rememberDownloadDir(dir) {
 }
 
 /**
- * dsh 子进程退出：关闭所有窗口（进程守护）。
+ * dsh 子进程退出：关闭所有窗口并退出应用（进程守护）。
  *
  * 只要后端进程没了，UI 就一定不可用，因此**无论退出码**都关窗——实测 dsh 会捕获
  * SIGTERM 并以 `code=0` 优雅退出，若只按「非 0 才关窗」判断，`kill <dsh pid>` 之后
  * 会留下一个后端已死的空窗口（规格 §12.1.7 要求此时窗口自动关闭）。
+ *
+ * 必须先置位 quitting 再关窗：否则 close 拦截会把窗口再次隐藏，留下只有托盘、
+ * 没有后端的死 UI（规格 §7.4 / §8.3）。
  */
 function onChildExit(code, signal) {
   child = null
   if (quitting) return
   log(`[dsh] child exited: code=${code} signal=${signal}`)
+  quitting = true
   for (const win of BrowserWindow.getAllWindows()) win.close()
 }
 

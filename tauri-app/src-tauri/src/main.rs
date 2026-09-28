@@ -3,10 +3,13 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tauri::menu::MenuBuilder;
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::DownloadEvent;
-use tauri::{AppHandle, Manager, RunEvent};
+use tauri::{App, AppHandle, Manager, RunEvent, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
 #[cfg(windows)]
@@ -77,6 +80,123 @@ struct AppState {
     child: Arc<Mutex<Option<Child>>>,
     /// dsh 0.1.2 起的浏览器会话 cookie（HttpOnly，仅 Rust 侧持有，用于下载请求）。
     cookie: Arc<Mutex<Option<String>>>,
+    /// 显式退出状态：仅托盘菜单「退出」置位。置位后主窗口关闭不再被拦截为隐藏，
+    /// 应用按正常退出流程回收 dsh child 并结束进程。线程安全：窗口事件、托盘回调、
+    /// child 监听线程与 RunEvent 可能在不同执行上下文访问。
+    quitting: Arc<AtomicBool>,
+    /// 托盘图标实例。Tauri 的 TrayIcon 是引用计数的：build() 时已注册进 app 的
+    /// 托盘 registry（registry 持有一份引用，托盘图标在应用退出前不会消失），
+    /// 这里再持有一份引用确保任何路径下图标都存活，且只创建一次。
+    tray: Arc<Mutex<Option<tauri::tray::TrayIcon<tauri::Wry>>>>,
+}
+
+impl AppState {
+    fn is_quitting(&self) -> bool {
+        self.quitting.load(Ordering::SeqCst)
+    }
+
+    fn set_quitting(&self) {
+        self.quitting.store(true, Ordering::SeqCst);
+    }
+}
+
+/// 托盘菜单项的固定 ID。
+const MENU_OPEN: &str = "open-main";
+const MENU_QUIT: &str = "quit";
+/// 托盘图标固定 ID，防止初始化重复创建。
+const TRAY_ID: &str = "main-tray";
+/// 托盘 tooltip。
+const TRAY_TOOLTIP: &str = "DeepSeek Harness Desktop";
+
+/// 统一的主窗口恢复函数：供第二实例回调、托盘双击、托盘菜单「打开主界面」共同调用。
+///
+/// - 最小化时先恢复（unminimize）；
+/// - 显示并聚焦；
+/// - 窗口尚未创建（dsh 仍在启动）时静默返回，不创建第二个窗口、不启动第二个 dsh。
+fn show_main_window(app: &AppHandle) {
+    match app.get_webview_window("main") {
+        Some(win) => {
+            let _ = win.unminimize();
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+        None => {
+            log("[tray] main window not ready yet; ignore open request");
+        }
+    }
+}
+
+/// 统一退出入口：设置显式退出状态并请求应用退出。
+///
+/// 幂等：重复点击托盘「退出」或退出过程中再次触发，不会 panic / 死锁。
+/// dsh child 的回收仍由 `RunEvent::Exit` 路径统一处理（见 main() 末尾）。
+fn request_quit(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if state.is_quitting() {
+        log("[tray] quit already requested; ignore duplicate request");
+        return;
+    }
+    log("[tray] explicit quit requested");
+    state.set_quitting();
+    app.exit(0);
+}
+
+/// 创建托盘图标（唯一实例）并绑定菜单/双击事件。
+///
+/// - 从应用默认图标取得托盘图标（不复制新图标文件）。
+/// - 使用固定 ID `main-tray` 防止重复创建。
+/// - 菜单仅含两个项：`打开主界面`、`退出`（顺序固定，无分隔线）。
+/// - 双击执行与「打开主界面」相同的恢复逻辑。
+/// - 托盘是「关闭即隐藏」语义的前提：初始化失败时记录日志并返回 Err，
+///   由调用方决定降级（不启用隐藏语义）或按启动失败处理（规格 §8.1）。
+fn init_tray(app: &App) -> tauri::Result<tauri::tray::TrayIcon<tauri::Wry>> {
+    let handle = app.handle();
+    // 菜单：仅两个项，顺序固定。MenuId 用于事件分发。
+    let open_item =
+        tauri::menu::MenuItem::with_id(handle, MENU_OPEN, "打开主界面", true, None::<&str>)?;
+    let quit_item = tauri::menu::MenuItem::with_id(handle, MENU_QUIT, "退出", true, None::<&str>)?;
+    let menu = MenuBuilder::new(handle)
+        .item(&open_item)
+        .item(&quit_item)
+        .build()?;
+
+    // 应用默认图标（Windows 取 bundle.icon 里的 icon.ico；其他平台取 icon.png）。
+    let icon = handle
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))?;
+
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
+        .icon(icon)
+        .tooltip(TRAY_TOOLTIP)
+        .menu(&menu)
+        // 关键：Windows 默认左键单击会弹出菜单，会吞掉双击。关闭左键弹菜单，
+        // 右键弹菜单不受影响，双击事件才能正常触发（规格 §4.2/§4.3）。
+        .show_menu_on_left_click(false)
+        // 双击托盘图标 -> 恢复并聚焦主窗口（与「打开主界面」同一函数）。
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                log("[tray] double-click; restoring main window");
+                show_main_window(app);
+            }
+        })
+        .on_menu_event(|app, event| {
+            let id = &event.id;
+            if id == MENU_OPEN {
+                log("[tray] menu: open main window");
+                show_main_window(app);
+            } else if id == MENU_QUIT {
+                request_quit(app);
+            }
+        })
+        .build(handle)?;
+
+    Ok(tray)
 }
 
 /// 去掉 Windows 长路径前缀（`\\?\`）。该前缀作为 node 命令行参数无法被解析。
@@ -111,7 +231,11 @@ fn log(msg: &str) {
     #[cfg(debug_assertions)]
     println!("{msg}");
     if let Some(path) = log_path() {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             let _ = writeln!(f, "{msg}");
         }
     }
@@ -183,8 +307,7 @@ fn spawn_dsh(app: &AppHandle) -> Result<Child, String> {
     // Windows：不分配 console 窗口（否则会弹黑色 console）
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd.spawn()
-        .map_err(|e| format!("failed to spawn dsh: {e}"))
+    cmd.spawn().map_err(|e| format!("failed to spawn dsh: {e}"))
 }
 
 /// 把文本中 URL 的敏感 query 值（`token`）替换为 `***`，避免一次性凭据落盘到日志。
@@ -279,14 +402,10 @@ fn wait_for_ready_url(
         match url_rx.recv_timeout(Duration::from_secs(30)) {
             Ok(url) => return Ok(url),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-            | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        return Err(format!("dsh exited early with {status}"))
-                    }
-                    _ => return Err("timed out (30s) waiting for dsh URL".to_string()),
-                }
-            }
+            | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match child.try_wait() {
+                Ok(Some(status)) => return Err(format!("dsh exited early with {status}")),
+                _ => return Err("timed out (30s) waiting for dsh URL".to_string()),
+            },
         }
     }
 }
@@ -301,7 +420,13 @@ fn session_zip_filename(url: &url::Url) -> String {
         .unwrap_or_else(|| "download".to_string());
     let safe: String = id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("dsh-session-{safe}.zip")
 }
@@ -309,7 +434,11 @@ fn session_zip_filename(url: &url::Url) -> String {
 /// 「记住上次下载目录」的设置文件（纯文本，一行路径）。
 fn last_download_dir_path() -> Option<PathBuf> {
     let base = std::env::var("LOCALAPPDATA").ok()?;
-    Some(PathBuf::from(base).join("dsh-desktop").join("last-download-dir.txt"))
+    Some(
+        PathBuf::from(base)
+            .join("dsh-desktop")
+            .join("last-download-dir.txt"),
+    )
 }
 
 /// 读取记住的上次下载目录；不存在/失效则回退 None（调用方再回退系统「下载」目录）。
@@ -317,12 +446,18 @@ fn remembered_download_dir() -> Option<PathBuf> {
     let path = last_download_dir_path()?;
     let text = std::fs::read_to_string(path).ok()?;
     let dir = PathBuf::from(text.trim());
-    if dir.is_dir() { Some(dir) } else { None }
+    if dir.is_dir() {
+        Some(dir)
+    } else {
+        None
+    }
 }
 
 /// 保存本次选择的下载目录，供下次对话框默认定位。
 fn remember_download_dir(dir: &PathBuf) {
-    let Some(path) = last_download_dir_path() else { return };
+    let Some(path) = last_download_dir_path() else {
+        return;
+    };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -345,14 +480,12 @@ fn exchange_session_cookie(url: &str) -> Result<String, String> {
         .get(url)
         .call()
         .map_err(|e| format!("token exchange request failed: {e}"))?;
-    let raw = resp
-        .header("set-cookie")
-        .ok_or_else(|| {
-            format!(
-                "token exchange returned no Set-Cookie (status {})",
-                resp.status()
-            )
-        })?;
+    let raw = resp.header("set-cookie").ok_or_else(|| {
+        format!(
+            "token exchange returned no Set-Cookie (status {})",
+            resp.status()
+        )
+    })?;
     // 只保留 `name=value`，丢弃 Max-Age / Path / HttpOnly / SameSite 等属性
     let cookie = raw.split(';').next().unwrap_or("").trim().to_string();
     if cookie.is_empty() {
@@ -382,20 +515,34 @@ fn download_to(url: &str, dest: &PathBuf, cookie: Option<&str>) -> Result<u64, S
 fn main() {
     let app = tauri::Builder::default()
         // 单实例限制：必须第一个注册。第二实例启动时立即退出，
-        // 并在本回调中把已有主窗口恢复/聚焦（窗口未创建时忽略——dsh 就绪前窗口可能还不存在）。
+        // 并在本回调中复用统一恢复函数把已有主窗口恢复/聚焦
+        // （窗口未创建时忽略——dsh 就绪前窗口可能还不存在，规格 §8.4）。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.unminimize();
-                let _ = win.show();
-                let _ = win.set_focus();
-            }
+            log("[single-instance] second instance; restoring main window");
+            show_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             child: Arc::new(Mutex::new(None)),
             cookie: Arc::new(Mutex::new(None)),
+            quitting: Arc::new(AtomicBool::new(false)),
+            tray: Arc::new(Mutex::new(None)),
         })
         .setup(|app| {
+            // 0. 初始化托盘：必须在隐藏窗口之前可用，否则关闭后没有恢复入口。
+            //    失败时按启动失败处理（规格 §8.1：不能静默创建「关闭后不可恢复」的隐藏窗口）。
+            let tray = match init_tray(app) {
+                Ok(t) => {
+                    log("[tray] tray icon initialized");
+                    t
+                }
+                Err(e) => {
+                    log(&format!("[tray] tray initialization failed: {e}"));
+                    std::process::exit(1);
+                }
+            };
+            app.state::<AppState>().tray.lock().unwrap().replace(tray);
+
             // 1. spawn dsh
             let mut child = match spawn_dsh(app.handle()) {
                 Ok(c) => c,
@@ -544,9 +691,31 @@ fn main() {
                 .build()
                 .map_err(|e| format!("failed to create window: {e}"))?;
 
-            // 5. 启动 child 退出监听线程
+            // 4.5 主窗口关闭拦截：区分用户关闭与应用主动退出。
+            //     - 未进入退出状态：prevent_default + 隐藏（关闭到托盘，规格 §4.4）。
+            //     - 已进入退出状态（托盘「退出」/ 系统退出）：不拦截，正常退出（规格 §4.5）。
+            //     - dsh child 异常退出路径会先置位退出状态再关窗，因此不会被再次隐藏（§5）。
+            let state_for_close = app.state::<AppState>();
+            let close_state = state_for_close.quitting.clone();
+            let main_win = app.get_webview_window("main").unwrap();
+            main_win.clone().on_window_event(move |event| {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    if !close_state.load(Ordering::SeqCst) {
+                        // 用户关闭 -> 隐藏到托盘（必要时先恢复非最小化，避免下次打开异常）
+                        log("[tray] close requested; hiding to tray");
+                        api.prevent_close();
+                        let _ = main_win.unminimize();
+                        let _ = main_win.hide();
+                    }
+                }
+            });
+
+            // 5. 启动 child 退出监听线程。
+            //    child 异常退出必须绕过「用户关闭即隐藏」逻辑，最终退出应用，
+            //    不能留下只有托盘、没有后端的死 UI（规格 §5 / §8.3）。
             let app_handle = app.handle().clone();
             let child_arc = state.child.clone();
+            let quit_flag = state.quitting.clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_millis(500));
                 let result = {
@@ -561,16 +730,26 @@ fn main() {
                     None => break,
                     // 仍在运行，继续轮询
                     Some(Ok(None)) => continue,
-                    // 子进程退出
+                    // 子进程退出：异常退出必须关掉窗口并退出应用；
+                    // 正常退出（如外部关闭）同样不能让托盘空转，直接退出。
                     Some(Ok(Some(status))) => {
                         if !status.success() {
                             log(&format!(
                                 "[dsh] child exited abnormally: code={:?}",
                                 status.code()
                             ));
-                            for (_, w) in app_handle.webview_windows().iter() {
-                                let _ = w.close();
-                            }
+                        } else {
+                            log(&format!(
+                                "[dsh] child exited normally: code={:?}",
+                                status.code()
+                            ));
+                        }
+                        // 置位退出状态：后续 close 不再被拦截成隐藏。
+                        quit_flag.store(true, Ordering::SeqCst);
+                        // 关闭所有窗口。置位后 close 事件放行，窗口真正关闭；
+                        // 最后一个窗口销毁后触发 ExitRequested -> Exit，回收 child。
+                        for (_, w) in app_handle.webview_windows().iter() {
+                            let _ = w.close();
                         }
                         break;
                     }
@@ -584,10 +763,15 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    // 应用退出时回收子进程
+    // 应用退出时回收子进程、清理托盘（托盘图标随应用退出消失，规格 §4.1）
     app.run(|app_handle, event| {
         if let RunEvent::Exit = event {
             let state = app_handle.state::<AppState>();
+            // 置位退出状态，兜底任何 close 路径都放行
+            state.set_quitting();
+            // 显式 drop 托盘引用：让托盘图标立即消失（TrayIcon 是引用计数，
+            // registry 的引用随 app 清理，这里主动释放我们持有的那份）。
+            state.tray.lock().unwrap().take();
             let mut guard = state.child.lock().unwrap();
             if let Some(mut child) = guard.take() {
                 let _ = child.kill();
