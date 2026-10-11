@@ -17,11 +17,17 @@ files:
   - package.json
   # 托盘图标：Tray 需要运行时图标文件（buildResources 只用于构建期，不会进 asar）
   - icons/icon.png
+  # 任务栏未读数字徽标：Windows setOverlayIcon 运行时需要（规格 §6.3）
+  - icons/badges/**
 
 extraResources:
   # 复用 build-runtime.mjs 产物，打进 Contents/Resources/runtime/
   - from: ../tauri-app/resources/runtime
     to: runtime
+  # 会话完成通知的前端注入桥（host 半 + client 半），运行时经 --patch 注入 dsh。
+  # 只读资源，不写用户 ~/.dsh（规格 §8）。
+  - from: ../desktop-bridge
+    to: bridge
 
 mac:
   target: [dmg]

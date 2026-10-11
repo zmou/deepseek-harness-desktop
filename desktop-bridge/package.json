@@ -1,0 +1,23 @@
+{
+  "name": "dsh-desktop-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Harness Desktop shell bridge: forwards the current viewed session to the desktop main process (spec: desktop-completion-notification-spec.md).",
+  "type": "module",
+  "main": "lib/index.js",
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  }
+}

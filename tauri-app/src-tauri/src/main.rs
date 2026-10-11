@@ -1,5 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// 会话完成通知的未读状态机（纯逻辑，可单元测试）
+mod state;
+// dsh web 后端协议客户端（HTTP unary RPC，可单元测试解析/判定）
+mod protocol;
+// 会话运行状态转换检测（纯逻辑，可单元测试）
+mod watch;
+// 会话完成通知主进程集成（轮询/判定/前台/徽标/通知）
+mod completion;
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -295,9 +304,18 @@ fn spawn_dsh(app: &AppHandle) -> Result<Child, String> {
     log(&format!("[dsh] using node: {node}"));
     log(&format!("[dsh] using bin: {}", bin.display()));
     let mut cmd = Command::new(node);
-    cmd.arg(&bin)
-        .arg("web")
-        .arg("--port")
+    // 注意参数顺序与拼写：dsh 的 launcher 只解析**第一个未识别 token 之前**的自身旗标，
+    // `--patch` 属 launcher 旗标，必须放在应用旗标（`--port`/`--no-open`）之前。
+    // 且此处必须用显式的 `--profile web`：裸 `web` 缩写仅在作为首个 token 时成立，
+    // 与 `--patch` 组合会报 `--profile <name> is required`（两者均实测）。
+    cmd.arg(&bin).arg("--profile").arg("web");
+    if let Some(patch_file) = write_bridge_patch(app) {
+        cmd.arg("--patch").arg(&patch_file);
+        log(&format!("[bridge] injecting patch: {}", patch_file.display()));
+    } else {
+        log("[bridge] dsh-desktop-bridge not found; viewed-session bridge disabled");
+    }
+    cmd.arg("--port")
         .arg("0")
         .arg("--no-open")
         // 清除宿主/IDE 注入的 NODE_OPTIONS（其 --require shim 会卡死 dsh 启动）
@@ -308,6 +326,43 @@ fn spawn_dsh(app: &AppHandle) -> Result<Child, String> {
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd.spawn().map_err(|e| format!("failed to spawn dsh: {e}"))
+}
+
+/// 解析 dsh-desktop-bridge 包的主入口（host 半 `lib/index.js`）。
+/// 生产：resource_dir/bridge/lib/index.js；开发：仓库根 desktop-bridge/lib/index.js。
+fn resolve_bridge_entry(app: &AppHandle) -> Option<PathBuf> {
+    if let Ok(dir) = app.path().resource_dir() {
+        let embedded = dir.join("bridge").join("lib").join("index.js");
+        if embedded.exists() {
+            return Some(normalize_path(&embedded));
+        }
+    }
+    // dev：cargo run 工作目录是 src-tauri，仓库根在其上级
+    let cwd = std::env::current_dir().ok()?;
+    let dev = cwd
+        .join("../../desktop-bridge/lib/index.js")
+        .canonicalize()
+        .unwrap_or_else(|_| cwd.join("../../desktop-bridge/lib/index.js"));
+    if dev.exists() {
+        return Some(normalize_path(&dev));
+    }
+    None
+}
+
+/// 生成 bridge 注入 patch 文件（应用数据目录），返回其路径。
+/// patch 内容：插入 dsh-desktop-bridge 行，name 指向 host 半入口的 file URL。
+fn write_bridge_patch(app: &AppHandle) -> Option<PathBuf> {
+    let entry = resolve_bridge_entry(app)?;
+    let dir = app
+        .path()
+        .app_local_data_dir()
+        .ok()?;
+    let _ = std::fs::create_dir_all(&dir);
+    let patch_file = dir.join("dsh-bridge.patch.yml");
+    let file_url = url::Url::from_file_path(&entry).ok()?.to_string();
+    let content = format!("- insert:\n  - id: dsh-desktop-bridge\n    name: {file_url}\n");
+    std::fs::write(&patch_file, content).ok()?;
+    Some(patch_file)
 }
 
 /// 把文本中 URL 的敏感 query 值（`token`）替换为 `***`，避免一次性凭据落盘到日志。
@@ -512,6 +567,18 @@ fn download_to(url: &str, dest: &PathBuf, cookie: Option<&str>) -> Result<u64, S
     std::io::copy(&mut reader, &mut file).map_err(|e| format!("write failed: {e}"))
 }
 
+/// 从 ready URL 推导无 token 的 HTTP 基址（`http://127.0.0.1:<port>`），
+/// 供会话完成通知的 unary RPC 客户端使用（RPC 走 Cookie 认证，不接受 query token）。
+fn base_url_of(url: &str) -> String {
+    let mut u = match url::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return url.to_string(),
+    };
+    u.set_query(None);
+    u.set_fragment(None);
+    u.to_string().trim_end_matches('/').to_string()
+}
+
 fn main() {
     let app = tauri::Builder::default()
         // 单实例限制：必须第一个注册。第二实例启动时立即退出，
@@ -522,6 +589,8 @@ fn main() {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        // 会话完成通知：原生系统通知插件（Rust 主进程直接调用，无需 capability）。
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState {
             child: Arc::new(Mutex::new(None)),
             cookie: Arc::new(Mutex::new(None)),
@@ -690,6 +759,32 @@ fn main() {
                 })
                 .build()
                 .map_err(|e| format!("failed to create window: {e}"))?;
+
+            // 4.6 会话完成通知：启动后台完成检测线程（规格 §12 第 3 步）。
+            //     - 需要会话 cookie（unary RPC 走 Cookie 认证）；换不到则跳过（界面不受影响）。
+            //     - 线程用 HTTP unary 轮询 session/list + projections + page，
+            //       零 WS、零 waterfall 副作用、零 Agent 激活（冷安全）。
+            if let Some(cookie) = state.cookie.lock().unwrap().clone() {
+                let client =
+                    crate::protocol::DshClient::new(&base_url_of(&url), &cookie);
+                let state_path = crate::completion::state_file_path(app.handle());
+                let app_handle = app.handle().clone();
+                crate::log(&format!(
+                    "[notify] completion pump starting; base={}",
+                    redact_url(&base_url_of(&url))
+                ));
+                crate::completion::spawn_completion_pump(
+                    app_handle,
+                    client,
+                    state_path,
+                    || std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                );
+            } else {
+                log("[notify] no session cookie; completion notifications disabled");
+            }
 
             // 4.5 主窗口关闭拦截：区分用户关闭与应用主动退出。
             //     - 未进入退出状态：prevent_default + 隐藏（关闭到托盘，规格 §4.4）。

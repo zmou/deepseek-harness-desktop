@@ -16,6 +16,8 @@ const path = require('node:path')
 const redact = require('./redact')
 const { resolveDshBin, resolveNode } = require('./runtime')
 const hideSessionDialog = require('./hide-session-dialog')
+const completionMonitor = require('./completion-monitor')
+const bridgeInject = require('./bridge-inject')
 
 const log = redact.log
 
@@ -41,6 +43,10 @@ let mainWindow = null
 let quitting = false
 /** 托盘图标实例：必须由主进程变量长期持有，否则会被 GC / 无法响应事件（规格 §7.1）。 */
 let tray = null
+/** 会话完成通知监控的 stop 函数（退出时调用）。 */
+let stopCompletionMonitor = null
+/** 当前未读状态机（供注入桥的 viewed-session 信号更新同一 store）。 */
+let completionStore = null
 
 // 代理抗性（1/2）：必须在 app ready 之前追加开关。
 // 本机代理（Clash/mihomo 等）会把 localhost 的 HTTP/WebSocket 也代理出去，
@@ -83,6 +89,10 @@ function start() {
   // 否则主动关闭窗口会被 close 拦截再次隐藏（规格 §7.3 / §4.5）。
   app.on('before-quit', () => {
     quitting = true
+    if (stopCompletionMonitor) {
+      stopCompletionMonitor()
+      stopCompletionMonitor = null
+    }
     killChild()
   })
 
@@ -157,6 +167,30 @@ async function onReady() {
 
   const readyUrl = await startDsh()
   createWindow(readyUrl)
+
+  // 会话完成通知：主进程后台监控（协议 unary RPC + 未读状态机 + 原生通知/徽标）。
+  // baseUrl 去掉 `?token=`（RPC 走 Cookie 认证，不接受 query token）。
+  const stateFile = completionMonitor.stateFilePath(app)
+  let baseUrl = readyUrl
+  try {
+    const parsed = new URL(readyUrl)
+    parsed.search = ''
+    parsed.hash = ''
+    baseUrl = parsed.toString().replace(/\/$/, '')
+  } catch {
+    /* 非法 URL 用原值，监控会因请求失败仅记日志 */
+  }
+  const monitor = completionMonitor.startCompletionMonitor({
+    app,
+    getWindow: () => mainWindow,
+    net,
+    baseUrl,
+    stateFile,
+    log,
+  })
+  stopCompletionMonitor = () => monitor.stop()
+  completionStore = monitor.getStore()
+  log(`[notify] completion monitor started; base=${redact.redactUrl(baseUrl)}`)
 }
 
 /**
@@ -202,6 +236,34 @@ function requestQuit() {
 }
 
 /**
+ * 准备 bridge 注入 patch 文件；找不到 bridge 包时返回 null（不阻断启动）。
+ *
+ * patch 落在 userData（可写），插件包路径按「打包 resources → asar → 开发仓库」
+ * 优先级解析（见 bridge-inject.js）。任何失败只记日志。
+ */
+function prepareBridgePatch() {
+  try {
+    const candidates = bridgeInject.bridgeEntryCandidates({
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+      repoRoot: path.join(__dirname, '..', '..'),
+    })
+    const entry = bridgeInject.pickBridgeEntry(candidates, (p) => fs.existsSync(p))
+    if (!entry) {
+      log(`[bridge] candidates checked: ${candidates.join(' | ')}`)
+      return null
+    }
+    const patchPath = bridgeInject.bridgePatchPath(app.getPath('userData'))
+    fs.mkdirSync(path.dirname(patchPath), { recursive: true })
+    fs.writeFileSync(patchPath, bridgeInject.buildPatchContent(entry))
+    return patchPath
+  } catch (error) {
+    log(`[bridge] patch preparation failed: ${messageOf(error)}`)
+    return null
+  }
+}
+
+/**
  * spawn `node <dsh bin.js> web --port 0 --no-open`，并返回 ready URL 的 Promise。
  *
  * 关键：spawn 后必须**立即**持续泵送 stdout/stderr。管道缓冲约 64KB，读端不消费
@@ -217,7 +279,25 @@ function startDsh() {
   // 清除宿主/IDE 注入的 NODE_OPTIONS（其 --require shim 会卡死 dsh 启动）
   delete env.NODE_OPTIONS
 
-  const proc = spawn(node, [bin, 'web', '--port', '0', '--no-open'], {
+  // launcher 旗标必须位于应用旗标之前，且需显式的 `--profile web`：
+  // dsh 只解析首个未识别 token 之前的自身旗标，裸 `web` 缩写仅在作为首个 token 时成立
+  // （`--patch` 放后面报 unknown option；与裸 `web` 组合报 --profile is required，均实测）。
+  const args = [bin, '--profile', 'web']
+
+  // 会话完成通知：注入 dsh-desktop-bridge client 插件（规格 §2.2 方案 2）。
+  // patch 生成到 userData，插件包随壳分发（extraResources/bridge），
+  // 不写 ~/.dsh、不改 resources/runtime（规格 §8）。
+  const patchFile = prepareBridgePatch()
+  if (patchFile) {
+    args.push('--patch', patchFile)
+    log(`[bridge] injecting patch: ${patchFile}`)
+  } else {
+    log('[bridge] dsh-desktop-bridge not found; viewed-session bridge disabled')
+  }
+
+  args.push('--port', '0', '--no-open')
+
+  const proc = spawn(node, args, {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,

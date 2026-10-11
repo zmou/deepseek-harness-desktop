@@ -1,7 +1,8 @@
 {
   "bundle": {
     "resources": {
-      "D:/rt/": "runtime/"
+      "D:/rt/": "runtime/",
+      "../../desktop-bridge/": "bridge/"
     }
   }
 }

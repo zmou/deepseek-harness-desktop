@@ -18,7 +18,8 @@
   "bundle": {
     "active": true,
     "resources": {
-      "../resources/runtime/": "runtime/"
+      "../resources/runtime/": "runtime/",
+      "../../desktop-bridge/": "bridge/"
     },
     "icon": [
       "icons/32x32.png",
